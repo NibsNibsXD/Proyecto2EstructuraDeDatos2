@@ -1,9 +1,8 @@
-#include "mainwindow.h"
-
 #include <QApplication>
+#include "shellwindow.h"
 
 int main(int argc, char** argv){
     QApplication app(argc, argv);
-    MainWindow w; w.resize(960,600); w.show();
+    ShellWindow w; w.resize(1000,650); w.show();
     return app.exec();
 }

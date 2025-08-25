@@ -1,9 +1,8 @@
-#include "mainwindow.h"
-
 #include <QApplication>
+#include "recordspage.h"
 
 int main(int argc, char** argv){
     QApplication app(argc, argv);
-    MainWindow w; w.resize(960,600); w.show();
+    RecordsPage w; w.resize(900,550); w.show();
     return app.exec();
 }
