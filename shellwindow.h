@@ -4,18 +4,12 @@
 #pragma once
 #include <QMainWindow>
 
-class QListWidget;
-class QStackedWidget;
-
 class ShellWindow : public QMainWindow {
     Q_OBJECT
 public:
     explicit ShellWindow(QWidget* parent=nullptr);
-private:
-    QListWidget*    sidebar_;
-    QStackedWidget* stack_;
-    void buildMenus();
+protected:
+    void showEvent(QShowEvent* e) override;
 };
-
 
 #endif // SHELLWINDOW_H

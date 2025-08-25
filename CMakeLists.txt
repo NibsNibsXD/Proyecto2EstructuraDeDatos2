@@ -22,6 +22,7 @@ add_executable(shell_sandbox
   shell_sandbox.cpp
   shellwindow.cpp
   shellwindow.h
+  resources_shell.qrc
 )
 target_link_libraries(shell_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
 
@@ -30,6 +31,7 @@ add_executable(tables_sandbox
   tables_sandbox.cpp
   tablespage.cpp
   tablespage.h
+  resources_tables.qrc
 )
 target_link_libraries(tables_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
 
@@ -38,5 +40,6 @@ add_executable(data_sandbox
   data_sandbox.cpp
   recordspage.cpp
   recordspage.h
+  resources_records.qrc
 )
 target_link_libraries(data_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
