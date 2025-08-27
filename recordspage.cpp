@@ -1,55 +1,370 @@
 #include "recordspage.h"
+#include "ui_recordspage.h"
 
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QComboBox>
-#include <QTableWidget>
 #include <QHeaderView>
-#include <QLabel>
+#include <QMessageBox>
+#include <QDate>
+#include <QTableWidgetItem>
 
-RecordsPage::RecordsPage(QWidget* parent): QWidget(parent){
-    auto *root = new QVBoxLayout(this);
+RecordsPage::RecordsPage(QWidget* parent)
+    : QWidget(parent)
+    , ui(new Ui::RecordsPage)
+{
+    ui->setupUi(this);
 
-    auto *top = new QHBoxLayout();
-    tableSelector_ = new QComboBox(this);
-    tableSelector_->addItems({"Clientes","Pedidos"});
-    top->addWidget(new QLabel("Tabla:"));
-    top->addWidget(tableSelector_);
-    top->addStretch(1);
-    root->addLayout(top);
+    // ---- Conexiones de encabezado ----
+    connect(ui->cbTabla,              QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &RecordsPage::onTablaChanged);
+    connect(ui->leBuscar,             &QLineEdit::textChanged,
+            this, &RecordsPage::onBuscarChanged);
+    connect(ui->btnLimpiarBusqueda,   &QToolButton::clicked,
+            this, &RecordsPage::onLimpiarBusqueda);
 
-    grid_ = new QTableWidget(this);
-    root->addWidget(grid_, 1);
+    connect(ui->btnInsertar,          &QToolButton::clicked, this, &RecordsPage::onInsertar);
+    connect(ui->btnEditar,            &QToolButton::clicked, this, &RecordsPage::onEditar);
+    connect(ui->btnEliminar,          &QToolButton::clicked, this, &RecordsPage::onEliminar);
+    connect(ui->btnGuardar,           &QToolButton::clicked, this, &RecordsPage::onGuardar);
+    connect(ui->btnCancelar,          &QToolButton::clicked, this, &RecordsPage::onCancelar);
 
-    connect(tableSelector_, &QComboBox::currentTextChanged,
-            this, &RecordsPage::loadMock);
+    // ---- Tabla ----
+    connect(ui->twRegistros,          &QTableWidget::itemSelectionChanged,
+            this, &RecordsPage::onSelectionChanged);
+    connect(ui->twRegistros,          &QTableWidget::itemDoubleClicked,
+            this, &RecordsPage::onItemDoubleClicked);
 
-    loadMock("Clientes");
+    // ---- Editor ----
+    connect(ui->btnLimpiarForm,       &QToolButton::clicked, this, &RecordsPage::onLimpiarFormulario);
+    connect(ui->btnGenerarDummy,      &QToolButton::clicked, this, &RecordsPage::onGenerarDummyFila);
+
+    // ---- Paginación (etiqueta) ----
+    connect(ui->btnPrimero,           &QToolButton::clicked, this, &RecordsPage::onPrimero);
+    connect(ui->btnAnterior,          &QToolButton::clicked, this, &RecordsPage::onAnterior);
+    connect(ui->btnSiguiente,         &QToolButton::clicked, this, &RecordsPage::onSiguiente);
+    connect(ui->btnUltimo,            &QToolButton::clicked, this, &RecordsPage::onUltimo);
+
+    // Configuración base de la tabla (lo visual fino se hará por stylesheet)
+    ui->twRegistros->setSelectionBehavior(QAbstractItemView::SelectRows);
+    ui->twRegistros->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    ui->twRegistros->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    ui->twRegistros->setAlternatingRowColors(true);
+    ui->twRegistros->setSortingEnabled(true);
+    ui->twRegistros->verticalHeader()->setVisible(false);
+    ui->twRegistros->horizontalHeader()->setStretchLastSection(true);
+
+    // Tablas demo para el sandbox
+    ui->cbTabla->clear();
+    ui->cbTabla->addItems(QStringList() << "Estudiantes" << "Cursos" << "Inscripciones");
+
+    construirColumnasDemo();
+    cargarDatosDemo();
+    setMode(Mode::Idle);
+    updateStatusLabels();
 }
 
-void RecordsPage::loadMock(const QString& t){
-    if(t=="Clientes"){
-        grid_->clear();
-        grid_->setColumnCount(3);
-        grid_->setHorizontalHeaderLabels({"id","nombre","email"});
-        grid_->setRowCount(2);
-        grid_->setItem(0,0,new QTableWidgetItem("1"));
-        grid_->setItem(0,1,new QTableWidgetItem("Ana"));
-        grid_->setItem(0,2,new QTableWidgetItem("ana@mail.com"));
-        grid_->setItem(1,0,new QTableWidgetItem("2"));
-        grid_->setItem(1,1,new QTableWidgetItem("Luis"));
-        grid_->setItem(1,2,new QTableWidgetItem("luis@mail.com"));
-    } else {
-        grid_->clear();
-        grid_->setColumnCount(3);
-        grid_->setHorizontalHeaderLabels({"id","cliente_id","total"});
-        grid_->setRowCount(2);
-        grid_->setItem(0,0,new QTableWidgetItem("101"));
-        grid_->setItem(0,1,new QTableWidgetItem("1"));
-        grid_->setItem(0,2,new QTableWidgetItem("59.9"));
-        grid_->setItem(1,0,new QTableWidgetItem("102"));
-        grid_->setItem(1,1,new QTableWidgetItem("2"));
-        grid_->setItem(1,2,new QTableWidgetItem("120.0"));
+RecordsPage::~RecordsPage()
+{
+    delete ui;
+}
+
+// =================== Helpers de estado/UI ===================
+
+void RecordsPage::setMode(Mode m)
+{
+    m_mode = m;
+    switch (m_mode) {
+    case Mode::Idle:
+        ui->twRegistros->setEnabled(true);
+        ui->lblFormTitle->setText(QStringLiteral("Editor — (sin selección)"));
+        break;
+    case Mode::Insert:
+        ui->twRegistros->clearSelection();
+        ui->twRegistros->setEnabled(false);
+        ui->lblFormTitle->setText(QStringLiteral("Editor — Insertar"));
+        break;
+    case Mode::Edit:
+        ui->twRegistros->setEnabled(false);
+        ui->lblFormTitle->setText(QStringLiteral("Editor — Editar"));
+        break;
     }
-    grid_->resizeColumnsToContents();
+    updateHeaderButtons();
+}
+
+void RecordsPage::updateHeaderButtons()
+{
+    const bool haveSel = !ui->twRegistros->selectedItems().isEmpty();
+    const bool editing = (m_mode != Mode::Idle);
+
+    ui->btnInsertar->setEnabled(!editing);
+    ui->btnEditar->setEnabled(!editing && haveSel);
+    ui->btnEliminar->setEnabled(!editing && haveSel);
+    ui->btnGuardar->setEnabled(editing);
+    ui->btnCancelar->setEnabled(editing);
+}
+
+void RecordsPage::updateStatusLabels()
+{
+    // Total visibles (no filtrados)
+    int total = ui->twRegistros->rowCount();
+    int visibles = 0;
+    for (int r = 0; r < total; ++r)
+        if (!ui->twRegistros->isRowHidden(r)) ++visibles;
+
+    ui->lblTotal->setText(QStringLiteral("Mostrando %1 de %2").arg(visibles).arg(total));
+    ui->lblPagina->setText(QStringLiteral("%1 / %2").arg(m_currentPage).arg(1)); // paginación simple por ahora
+}
+
+// =================== Construcción demo ===================
+
+void RecordsPage::construirColumnasDemo()
+{
+    ui->twRegistros->clear();
+    ui->twRegistros->setColumnCount(6);
+    ui->twRegistros->setHorizontalHeaderLabels(
+        QStringList() << "ID" << "Nombre" << "Correo" << "Teléfono" << "Fecha" << "Activo");
+}
+
+void RecordsPage::cargarDatosDemo()
+{
+    ui->twRegistros->setRowCount(0);
+    // 30 filas de ejemplo
+    for (int i = 0; i < 30; ++i) {
+        const int row = ui->twRegistros->rowCount();
+        ui->twRegistros->insertRow(row);
+
+        auto* c0 = new QTableWidgetItem(QString::number(1000 + i));
+        auto* c1 = new QTableWidgetItem(QStringLiteral("Nombre %1").arg(i + 1));
+        auto* c2 = new QTableWidgetItem(QStringLiteral("user%1@email.com").arg(i + 1));
+        auto* c3 = new QTableWidgetItem(QStringLiteral("9999-00%1").arg(i % 10));
+        auto* c4 = new QTableWidgetItem(QDate::currentDate().addDays(-i).toString("yyyy-MM-dd"));
+        auto* c5 = new QTableWidgetItem((i % 3 == 0) ? "No" : "Sí");
+
+        ui->twRegistros->setItem(row, 0, c0);
+        ui->twRegistros->setItem(row, 1, c1);
+        ui->twRegistros->setItem(row, 2, c2);
+        ui->twRegistros->setItem(row, 3, c3);
+        ui->twRegistros->setItem(row, 4, c4);
+        ui->twRegistros->setItem(row, 5, c5);
+    }
+}
+
+// =================== Acciones de encabezado ===================
+
+void RecordsPage::onTablaChanged(int /*index*/)
+{
+    // En esta fase sandbox: reconstruimos columnas y datos de demostración.
+    construirColumnasDemo();
+    cargarDatosDemo();
+    ui->leBuscar->clear();
+    setMode(Mode::Idle);
+    updateStatusLabels();
+}
+
+void RecordsPage::onBuscarChanged(const QString& text)
+{
+    aplicarFiltroBusqueda(text);
+    updateStatusLabels();
+}
+
+void RecordsPage::onLimpiarBusqueda()
+{
+    ui->leBuscar->clear();
+    ui->leBuscar->setFocus();
+}
+
+// =================== Operaciones Insertar / Editar / Eliminar ===================
+
+void RecordsPage::onInsertar()
+{
+    limpiarFormulario();
+    setMode(Mode::Insert);
+    ui->leId->setFocus();
+}
+
+void RecordsPage::onEditar()
+{
+    const auto selRows = ui->twRegistros->selectionModel()->selectedRows();
+    if (selRows.isEmpty()) return;
+
+    limpiarFormulario();
+    cargarFormularioDesdeFila(selRows.first().row());
+    setMode(Mode::Edit);
+}
+
+void RecordsPage::onEliminar()
+{
+    const auto selRows = ui->twRegistros->selectionModel()->selectedRows();
+    if (selRows.isEmpty()) return;
+
+    if (QMessageBox::question(this, tr("Eliminar"),
+                              tr("¿Eliminar %1 registro(s) de la vista? (Simulado)")
+                                  .arg(selRows.size())) != QMessageBox::Yes) return;
+
+    // Eliminar de la tabla (solo visual, sandbox)
+    QList<int> rows;
+    rows.reserve(selRows.size());
+    for (const auto& mi : selRows) rows << mi.row();
+    std::sort(rows.begin(), rows.end(), std::greater<int>());
+    for (int r : rows) ui->twRegistros->removeRow(r);
+
+    emit recordDeleted(ui->cbTabla->currentText(), rows);
+    updateStatusLabels();
+    updateHeaderButtons();
+}
+
+void RecordsPage::onGuardar()
+{
+    if (m_mode == Mode::Insert) {
+        int newRow = agregarFilaDesdeFormulario();
+        emit recordInserted(ui->cbTabla->currentText());
+        ui->twRegistros->selectRow(newRow);
+    } else if (m_mode == Mode::Edit) {
+        const auto selRows = ui->twRegistros->selectionModel()->selectedRows();
+        if (!selRows.isEmpty()) {
+            const int row = selRows.first().row();
+            escribirFormularioEnFila(row);
+            emit recordUpdated(ui->cbTabla->currentText(), row);
+        }
+    }
+    setMode(Mode::Idle);
+    updateStatusLabels();
+}
+
+void RecordsPage::onCancelar()
+{
+    setMode(Mode::Idle);
+}
+
+// =================== Tabla / selección / doble clic ===================
+
+void RecordsPage::onSelectionChanged()
+{
+    const auto selRows = ui->twRegistros->selectionModel()->selectedRows();
+    if (selRows.size() == 1) {
+        ui->lblFormTitle->setText(QStringLiteral("Editor — (1 seleccionado)"));
+    } else if (selRows.size() > 1) {
+        ui->lblFormTitle->setText(QStringLiteral("Editor — (%1 seleccionados)").arg(selRows.size()));
+    } else {
+        ui->lblFormTitle->setText(QStringLiteral("Editor — (sin selección)"));
+    }
+    updateHeaderButtons();
+}
+
+void RecordsPage::onItemDoubleClicked()
+{
+    onEditar();
+}
+
+// =================== Editor ===================
+
+void RecordsPage::onLimpiarFormulario()
+{
+    limpiarFormulario();
+}
+
+void RecordsPage::onGenerarDummyFila()
+{
+    // Rellena el formulario con datos de ejemplo (útil en sandbox)
+    ui->leId->setText(QString::number(1000 + ui->twRegistros->rowCount()));
+    ui->leNombre->setText(QStringLiteral("Nuevo Usuario"));
+    ui->leCorreo->setText(QStringLiteral("nuevo@email.com"));
+    ui->leTelefono->setText(QStringLiteral("9999-0000"));
+    ui->deFecha->setDate(QDate::currentDate());
+    ui->chkActivo->setChecked(true);
+    ui->dsbSaldo->setValue(0.0);
+    ui->pteNotas->setPlainText(QString());
+    ui->leExtra1->clear();
+    ui->leExtra2->clear();
+    ui->leExtra3->clear();
+}
+
+// =================== Paginación (mock) ===================
+
+void RecordsPage::onPrimero()  { m_currentPage = 1; updateStatusLabels(); }
+void RecordsPage::onAnterior() { m_currentPage = qMax(1, m_currentPage - 1); updateStatusLabels(); }
+void RecordsPage::onSiguiente(){ m_currentPage = m_currentPage + 1; updateStatusLabels(); }
+void RecordsPage::onUltimo()   { m_currentPage = m_currentPage + 1; updateStatusLabels(); }
+
+// =================== Utilidades de formulario/tabla ===================
+
+void RecordsPage::limpiarFormulario()
+{
+    ui->leId->clear();
+    ui->leNombre->clear();
+    ui->leCorreo->clear();
+    ui->leTelefono->clear();
+    ui->deFecha->setDate(QDate::currentDate());
+    ui->chkActivo->setChecked(false);
+    ui->dsbSaldo->setValue(0.0);
+    ui->pteNotas->clear();
+    ui->leExtra1->clear();
+    ui->leExtra2->clear();
+    ui->leExtra3->clear();
+}
+
+void RecordsPage::cargarFormularioDesdeFila(int row)
+{
+    if (row < 0 || row >= ui->twRegistros->rowCount()) return;
+
+    auto get = [&](int c){ return ui->twRegistros->item(row, c)
+                                       ? ui->twRegistros->item(row, c)->text() : QString(); };
+
+    ui->leId->setText(get(0));
+    ui->leNombre->setText(get(1));
+    ui->leCorreo->setText(get(2));
+    ui->leTelefono->setText(get(3));
+    ui->deFecha->setDate(QDate::fromString(get(4), "yyyy-MM-dd"));
+    ui->chkActivo->setChecked(get(5).trimmed().compare("Sí", Qt::CaseInsensitive) == 0);
+    ui->dsbSaldo->setValue(0.0);
+    ui->pteNotas->clear();
+    ui->leExtra1->clear();
+    ui->leExtra2->clear();
+    ui->leExtra3->clear();
+}
+
+void RecordsPage::escribirFormularioEnFila(int row)
+{
+    if (row < 0 || row >= ui->twRegistros->rowCount()) return;
+
+    auto put = [&](int c, const QString& v){
+        QTableWidgetItem* it = ui->twRegistros->item(row, c);
+        if (!it) { it = new QTableWidgetItem; ui->twRegistros->setItem(row, c, it); }
+        it->setText(v);
+    };
+
+    put(0, ui->leId->text());
+    put(1, ui->leNombre->text());
+    put(2, ui->leCorreo->text());
+    put(3, ui->leTelefono->text());
+    put(4, ui->deFecha->date().toString("yyyy-MM-dd"));
+    put(5, ui->chkActivo->isChecked() ? "Sí" : "No");
+}
+
+int RecordsPage::agregarFilaDesdeFormulario()
+{
+    const int row = ui->twRegistros->rowCount();
+    ui->twRegistros->insertRow(row);
+    escribirFormularioEnFila(row);
+    return row;
+}
+
+// ----------------- Búsqueda -----------------
+
+bool RecordsPage::filaCoincideBusqueda(int row, const QString& term) const
+{
+    if (term.isEmpty()) return true;
+    const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+    for (int c = 0; c < ui->twRegistros->columnCount(); ++c) {
+        if (auto* it = ui->twRegistros->item(row, c)) {
+            if (it->text().contains(term, cs)) return true;
+        }
+    }
+    return false;
+}
+
+void RecordsPage::aplicarFiltroBusqueda(const QString& term)
+{
+    for (int r = 0; r < ui->twRegistros->rowCount(); ++r) {
+        const bool show = filaCoincideBusqueda(r, term);
+        ui->twRegistros->setRowHidden(r, !show);
+    }
 }
