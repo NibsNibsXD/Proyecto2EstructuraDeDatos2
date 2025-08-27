@@ -1,8 +1,12 @@
 #include <QApplication>
 #include "tablespage.h"
 
-int main(int argc, char** argv){
+int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
-    TablesPage w; w.resize(800,500); w.show();
+
+    TablesPage page;
+    page.resize(1140, 574);
+    page.show();
+
     return app.exec();
 }
