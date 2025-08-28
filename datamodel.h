@@ -4,7 +4,7 @@
 #include <QString>
 #include <QList>
 
-// Definición común del esquema de campos para TablesPage y RecordsPage
+// Definición de un campo de tabla (la misma que ya usabas)
 struct FieldDef {
     QString name;
     QString type;      // Autonumeración, Número, Fecha/Hora, Moneda, Texto corto
@@ -22,7 +22,7 @@ struct FieldDef {
     QString indexado; // No / Sí (con duplicados) / Sí (sin duplicados)
 };
 
-// Alias útil: una “tabla” es una lista de FieldDef
+// Un "Schema" es simplemente la lista de FieldDef de una tabla.
 using Schema = QList<FieldDef>;
 
 #endif // DATAMODEL_H

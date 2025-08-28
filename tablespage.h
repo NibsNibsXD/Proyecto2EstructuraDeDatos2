@@ -11,33 +11,28 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QMap>
-#include "datamodel.h"   // <- Define FieldDef y using Schema = QList<FieldDef>
+#include "datamodel.h"   // <--- NUEVO
 
 class TablesPage : public QWidget {
     Q_OBJECT
 public:
     explicit TablesPage(QWidget *parent = nullptr, bool withSidebar = true);
-
-    // Accesos para integración
     QListWidget* tableListWidget() const { return tablesList; }
-    Schema       schemaFor(const QString& tableName) const { return dbMock.value(tableName); }
-    QStringList  tableNames() const { return dbMock.keys(); }
+
+    // Exponer el esquema actual de una tabla (para RecordsPage)
+    Schema schemaFor(const QString& table) const { return dbMock.value(table); }
 
 signals:
-    // Notifica a Shell/RecordsPage
-    void tableSelected(const QString& name);
-    void schemaChanged(const QString& name, const Schema& schema);
-    void tablesListChanged(const QStringList& names);
+    void tableSelected(const QString& tableName);                 // <--- NUEVO
+    void schemaChanged(const QString& tableName, const Schema&);  // <--- NUEVO
 
 private slots:
-    // acciones de tabla/campos
     void onAddField();
     void onRemoveField();
     void onNuevaTabla();
     void onEditarTabla();
     void onEliminarTabla();
 
-    // sincronización UI <-> modelo
     void onSelectTable();
     void onFieldSelectionChanged();
     void onPropertyChanged();
@@ -49,7 +44,7 @@ private:
 
     // Barra superior
     QLineEdit    *tableNameEdit = nullptr;
-    QLineEdit    *tableDescEdit = nullptr;     // descripción de tabla
+    QLineEdit    *tableDescEdit = nullptr;
     QPushButton  *btnNueva = nullptr;
     QPushButton  *btnEditar = nullptr;
     QPushButton  *btnEliminar = nullptr;
@@ -72,11 +67,11 @@ private:
     QCheckBox    *propRequerido = nullptr;
     QComboBox    *propIndexado = nullptr;
 
-    // Datos en memoria: nombreTabla -> lista de campos (Schema)
-    QMap<QString, Schema> dbMock;
+    // Datos en memoria: nombreTabla -> lista de campos
+    QMap<QString, Schema> dbMock;     // <--- CAMBIO
 
     // Descripciones por tabla
-    QMap<QString, QString> tableDesc_;   // nombreTabla -> descripción
+    QMap<QString, QString> tableDesc_;
 
     // helpers UI
     void setupUi();
@@ -89,10 +84,9 @@ private:
     void connectRowEditors(int row);
     QString currentTableName() const;
 
-    // limpiar panel de propiedades
     void clearPropsUi();
 
-    // validación/consulta
+    // helpers de validación/consulta
     bool tableExists(const QString& name) const;
     bool isValidTableName(const QString& name) const;
 

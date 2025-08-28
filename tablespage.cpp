@@ -338,6 +338,8 @@ void TablesPage::connectRowEditors(int row) {
             if (t == "Moneda")      sizeSp->setValue(8),  list[row].size = 8;
             if (t == "Fecha/Hora")  sizeSp->setValue(8),  list[row].size = 8;
         }
+
+        emit schemaChanged(table, dbMock[table]); // NUEVO
     });
 
     // Tamaño
@@ -346,6 +348,7 @@ void TablesPage::connectRowEditors(int row) {
         auto &list = dbMock[table];
         if (row < 0 || row >= list.size()) return;
         list[row].size = v;
+        emit schemaChanged(table, dbMock[table]); // NUEVO
     });
 
     // PK
@@ -355,6 +358,7 @@ void TablesPage::connectRowEditors(int row) {
         auto &list = dbMock[table];
         if (row < 0 || row >= list.size()) return;
         list[row].pk = on;
+        emit schemaChanged(table, dbMock[table]); // NUEVO
     });
 }
 
@@ -366,12 +370,14 @@ void TablesPage::onNameItemEdited(QTableWidgetItem *it) {
     int row = it->row();
     if (row < 0 || row >= list.size()) return;
     list[row].name = it->text();
+    emit schemaChanged(table, dbMock[table]); // NUEVO
 }
 
 void TablesPage::onSelectTable() {
     const auto name = currentTableName();
     if (name.isEmpty()) return;
     loadTableToUi(name);
+    emit tableSelected(name);               // NUEVO
 }
 
 void TablesPage::onFieldSelectionChanged() {
@@ -415,6 +421,7 @@ void TablesPage::onPropertyChanged() {
     int row = fieldsTable->currentRow();
     if (row < 0 || row >= list.size()) return;
     pullPropsFromUi(list[row]);
+    emit schemaChanged(table, dbMock[table]); // NUEVO
 }
 
 void TablesPage::clearPropsUi() {
@@ -448,6 +455,8 @@ void TablesPage::onAddField() {
     buildRowFromField(r, fd);
     connectRowEditors(r);
     fieldsTable->selectRow(r);
+
+    emit schemaChanged(table, dbMock[table]); // NUEVO
 }
 
 void TablesPage::onRemoveField() {
@@ -463,6 +472,8 @@ void TablesPage::onRemoveField() {
         fieldsTable->selectRow(std::min(row, fieldsTable->rowCount()-1));
     else
         clearPropsUi();
+
+    emit schemaChanged(table, dbMock[table]); // NUEVO
 }
 
 /* =================== CRUD de tablas =================== */
@@ -515,7 +526,7 @@ void TablesPage::onNuevaTabla() {
     pk.requerido = true;
     pk.indexado  = "Sí (sin duplicados)";
 
-    dbMock.insert(name, QList<FieldDef>{ pk });
+    dbMock.insert(name, Schema{ pk });
 
     // Descripción asociada inicia vacía (se actualizará al teclear)
     tableDesc_[name] = QString();
@@ -531,6 +542,8 @@ void TablesPage::onNuevaTabla() {
     tableDescEdit->clear(); // listo para escribir descripción
     if (fieldsTable->rowCount() > 0) fieldsTable->selectRow(0);
 
+    emit tableSelected(name);           // NUEVO
+    emit schemaChanged(name, dbMock[name]); // NUEVO
 
     QMessageBox::information(this, "Nueva tabla",
                              "Se creó la tabla \"" + name + "\" (en memoria).");
@@ -564,6 +577,9 @@ void TablesPage::onEditarTabla() {
     tableDesc_[newName] = desc;
 
     item->setText(newName);
+
+    emit tableSelected(newName);               // NUEVO
+    emit schemaChanged(newName, dbMock[newName]); // NUEVO
 }
 
 void TablesPage::onEliminarTabla() {
@@ -581,4 +597,6 @@ void TablesPage::onEliminarTabla() {
     tableNameEdit->clear();
     tableDescEdit->clear();
     clearPropsUi();
+
+    emit schemaChanged(name, {}); // NUEVO: esquema vacío tras eliminar
 }

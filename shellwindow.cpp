@@ -45,7 +45,7 @@ static QWidget* vSep(int h = 64) {
     return sep;
 }
 
-// --- Panel izquierdo tipo Access (no usado directamente, dejamos helper por si se necesita) ---
+// --- Panel izquierdo tipo Access (no usado directamente, helper por si se necesita) ---
 static QWidget* buildLeftPanel(int width, int height) {
     auto *panel = new QWidget;
     panel->setFixedSize(width, height);
@@ -159,7 +159,6 @@ static QWidget* buildRecordNavigator(int width, int height) {
     hl->addWidget(filterLbl);
     hl->addSpacing(20);
     hl->addWidget(search);
-
     hl->addStretch();
 
     return bar;
@@ -198,14 +197,6 @@ static QToolButton* makeActionBtn(const QString& text, const QString& iconPath =
             icon = qApp->style()->standardIcon(QStyle::SP_DialogSaveButton);
         else if (text.contains("Delete", Qt::CaseInsensitive))
             icon = qApp->style()->standardIcon(QStyle::SP_TrashIcon);
-        else if (text.contains("First", Qt::CaseInsensitive))
-            icon = qApp->style()->standardIcon(QStyle::SP_MediaSkipBackward);
-        else if (text.contains("Prev", Qt::CaseInsensitive))
-            icon = qApp->style()->standardIcon(QStyle::SP_ArrowBack);
-        else if (text.contains("Next", Qt::CaseInsensitive))
-            icon = qApp->style()->standardIcon(QStyle::SP_ArrowForward);
-        else if (text.contains("Last", Qt::CaseInsensitive))
-            icon = qApp->style()->standardIcon(QStyle::SP_MediaSkipForward);
         else if (text.contains("Find", Qt::CaseInsensitive))
             icon = qApp->style()->standardIcon(QStyle::SP_FileDialogContentsView);
         else if (text.contains("Sort Asc", Qt::CaseInsensitive))
@@ -220,14 +211,6 @@ static QToolButton* makeActionBtn(const QString& text, const QString& iconPath =
             icon = qApp->style()->standardIcon(QStyle::SP_FileDialogDetailedView);
         else if (text.contains("Design", Qt::CaseInsensitive))
             icon = qApp->style()->standardIcon(QStyle::SP_FileDialogListView);
-        else if (text.contains("Index", Qt::CaseInsensitive))
-            icon = qApp->style()->standardIcon(QStyle::SP_FileDialogDetailedView);
-        else if (text.contains("Relationship", Qt::CaseInsensitive))
-            icon = qApp->style()->standardIcon(QStyle::SP_DirLinkIcon);
-        else if (text.contains("Avail", Qt::CaseInsensitive))
-            icon = qApp->style()->standardIcon(QStyle::SP_FileDialogListView);
-        else if (text.contains("Compact", Qt::CaseInsensitive))
-            icon = qApp->style()->standardIcon(QStyle::SP_DialogResetButton);
         else
             icon = qApp->style()->standardIcon(QStyle::SP_FileIcon);
 
@@ -248,6 +231,7 @@ static QToolButton* makeActionBtn(const QString& text, const QString& iconPath =
     return b;
 }
 
+// ——— Ribbon group: TÍTULO ABAJO (como Access) ———
 static QWidget* makeRibbonGroup(const QString& title, const QList<QToolButton*>& buttons) {
     auto *wrap = new QWidget;
     wrap->setAttribute(Qt::WA_StyledBackground, true);
@@ -256,13 +240,7 @@ static QWidget* makeRibbonGroup(const QString& title, const QList<QToolButton*>&
     vl->setContentsMargins(6,6,6,0);
     vl->setSpacing(0);
 
-    auto *cap = new QLabel(title);
-    cap->setAlignment(Qt::AlignHCenter);
-    cap->setMargin(0);
-    cap->setContentsMargins(0,0,0,2);
-    cap->setStyleSheet("font-size:12px; font-weight:bold; "
-                       "color:#222; background:transparent; border:none; padding:0;");
-
+    // fila de botones
     auto *row = new QHBoxLayout;
     row->setContentsMargins(0,0,0,0);
     row->setSpacing(8);
@@ -278,8 +256,14 @@ static QWidget* makeRibbonGroup(const QString& title, const QList<QToolButton*>&
     frameLay->setSpacing(0);
     frameLay->addLayout(row);
 
-    vl->addWidget(cap);
+    // título ABAJO
+    auto *cap = new QLabel(title);
+    cap->setAlignment(Qt::AlignHCenter);
+    cap->setContentsMargins(0,2,0,0);
+    cap->setStyleSheet("font-size:11px; color:#666; background:transparent; border:none;");
+
     vl->addWidget(frame);
+    vl->addWidget(cap);
     return wrap;
 }
 
@@ -360,9 +344,10 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     connect(createBtn,  &QToolButton::toggled, this, [this](bool on){ if(on) ribbonStack->setCurrentIndex(1); });
     connect(dbToolsBtn, &QToolButton::toggled, this, [this](bool on){ if(on) ribbonStack->setCurrentIndex(2); });
 
-    // === PÁGINA TABLAS REAL ===
-    auto *tablesPage = new TablesPage(nullptr, false);
-    auto *list = tablesPage->tableListWidget();
+    // === PÁGINAS REALES ===
+    auto *tablesPage  = new TablesPage(nullptr, false);
+    auto *recordsPage = new RecordsPage;          // ← tu página de Registros
+    auto *list        = tablesPage->tableListWidget();
 
     // =============== Panel izquierdo (260x610) ===============
     auto *leftPanel = new QWidget;
@@ -431,16 +416,20 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         return page;
     };
 
-    auto *recordsPage = new RecordsPage;          // <-- tu página de Registros real
-
-    stack->addWidget(tablesPage);                 // index 0 (Design)
-    stack->addWidget(recordsPage);                // index 1 (Datasheet)
-    stack->addWidget(makePage("Consultas"));      // index 2
-    stack->addWidget(makePage("Relaciones"));     // index 3
+    stack->addWidget(tablesPage);            // index 0 (Design)
+    stack->addWidget(recordsPage);           // index 1 (Datasheet)
+    stack->addWidget(makePage("Consultas"));
+    stack->addWidget(makePage("Relaciones"));
 
     auto *navigator = buildRecordNavigator(kRightW, kBottomReserveH);
     rightV->addWidget(stack);
     rightV->addWidget(navigator);
+
+    // Mostrar navigator SOLO en Registros
+    navigator->setVisible(false);
+    QObject::connect(stack, &QStackedWidget::currentChanged, this, [=](int ix){
+        navigator->setVisible(stack->widget(ix) == recordsPage);
+    });
 
     // Layout horizontal
     auto *hbox = new QHBoxLayout;
@@ -462,25 +451,7 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     setCentralWidget(central);
     ribbonStack->setCurrentIndex(0);
 
-    // ====== Conexiones: TablesPage -> RecordsPage ======
-
-    // Al seleccionar una tabla (emisión desde TablesPage)
-    connect(tablesPage, &TablesPage::tableSelected, this,
-            [=](const QString& name){
-                recordsPage->setTableFromFieldDefs(name, tablesPage->schemaFor(name));
-                stack->setCurrentWidget(recordsPage); // ir a Datasheet
-            });
-
-    // Si cambia el esquema (añadir/renombrar/eliminar campo), refrescar si es la actual
-    connect(tablesPage, &TablesPage::schemaChanged, this,
-            [=](const QString& name, const Schema& s){
-                auto *it = list->currentItem();
-                if (it && it->text() == name) {
-                    recordsPage->setTableFromFieldDefs(name, s);
-                }
-            });
-
-    // También reaccionar a clicks en la lista (por UX)
+    // Abrir Registros cuando el usuario hace click en una tabla
     connect(list, &QListWidget::itemClicked, this, [=](QListWidgetItem* it){
         if (!it) return;
         const QString t = it->text();
@@ -530,13 +501,7 @@ QWidget* ShellWindow::buildHomeRibbon() {
                                                     makeActionBtn("Delete")
                                                 });
 
-    auto *gNav = makeRibbonGroup("Navigation", {
-                                                   makeActionBtn("First"),
-                                                   makeActionBtn("Prev"),
-                                                   makeActionBtn("Next"),
-                                                   makeActionBtn("Last"),
-                                                   makeActionBtn("Find")
-                                               });
+    // Quitamos "Navigation" del Ribbon (la navegación ya está en la barra inferior)
 
     auto *gSort = makeRibbonGroup("Sort & Filter", {
                                                        makeActionBtn("Sort Asc"),
@@ -550,13 +515,17 @@ QWidget* ShellWindow::buildHomeRibbon() {
                                                 makeActionBtn("Design")
                                             });
 
+    auto *gFind = makeRibbonGroup("Find", {
+        makeActionBtn("Find")
+    });
+
     hl->addWidget(gRecords);
-    hl->addWidget(vSep());
-    hl->addWidget(gNav);
     hl->addWidget(vSep());
     hl->addWidget(gSort);
     hl->addWidget(vSep());
     hl->addWidget(gViews);
+    hl->addWidget(vSep());
+    hl->addWidget(gFind);
     hl->addStretch();
     return wrap;
 }
@@ -590,21 +559,10 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
     hl->setContentsMargins(8,2,8,2);
     hl->setSpacing(16);
 
-    auto *gIdx = makeRibbonGroup("Indexes", {
-        makeActionBtn("Indexes")
-    });
-
-    auto *gRel = makeRibbonGroup("Relationships", {
-        makeActionBtn("Relationships")
-    });
-
-    auto *gAvail = makeRibbonGroup("Avail List", {
-        makeActionBtn("Avail List")
-    });
-
-    auto *gCompact = makeRibbonGroup("Compact", {
-        makeActionBtn("Compact")
-    });
+    auto *gIdx = makeRibbonGroup("Indexes", { makeActionBtn("Indexes") });
+    auto *gRel = makeRibbonGroup("Relationships", { makeActionBtn("Relationships") });
+    auto *gAvail = makeRibbonGroup("Avail List", { makeActionBtn("Avail List") });
+    auto *gCompact = makeRibbonGroup("Compact", { makeActionBtn("Compact") });
 
     hl->addWidget(gIdx);
     hl->addWidget(vSep());
