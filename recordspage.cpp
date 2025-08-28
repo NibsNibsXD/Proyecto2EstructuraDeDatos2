@@ -5,6 +5,9 @@
 #include <QMessageBox>
 #include <QDate>
 #include <QTableWidgetItem>
+#include <QSignalBlocker>
+#include <algorithm>        // std::sort
+#include "datamodel.h"      // Schema / FieldDef
 
 RecordsPage::RecordsPage(QWidget* parent)
     : QWidget(parent)
@@ -66,7 +69,70 @@ RecordsPage::~RecordsPage()
     delete ui;
 }
 
-// =================== Helpers de estado/UI ===================
+/* =================== Integración con TablesPage/Shell =================== */
+
+// Recibe nombre y esquema real; ajusta combo, título y grilla.
+void RecordsPage::setTableFromFieldDefs(const QString& name, const Schema& defs)
+{
+    m_tableName = name;
+    m_schema    = defs;
+
+    // Refleja el nombre en el combo sin disparar onTablaChanged
+    {
+        QSignalBlocker block(ui->cbTabla);
+        int idx = ui->cbTabla->findText(name);
+        if (idx < 0) {
+            ui->cbTabla->addItem(name);
+            idx = ui->cbTabla->count() - 1;
+        }
+        ui->cbTabla->setCurrentIndex(idx);
+    }
+
+    ui->lblFormTitle->setText(QStringLiteral("Editor — %1").arg(name.isEmpty() ? "sin selección" : name));
+    applyDefs(defs);
+    setMode(Mode::Idle);
+    updateStatusLabels();
+}
+
+// Reconstruye columnas y rellena datos dummy según tipos
+void RecordsPage::applyDefs(const Schema& defs)
+{
+    ui->twRegistros->clear();
+    ui->twRegistros->setRowCount(0);
+
+    if (defs.isEmpty()) {
+        ui->twRegistros->setColumnCount(0);
+        return;
+    }
+
+    ui->twRegistros->setColumnCount(defs.size());
+    QStringList headers;
+    headers.reserve(defs.size());
+    for (const auto& f : defs) headers << f.name;
+    ui->twRegistros->setHorizontalHeaderLabels(headers);
+
+    // Demo: 20 filas de ejemplo acordes al tipo
+    for (int i = 0; i < 20; ++i) {
+        int row = ui->twRegistros->rowCount();
+        ui->twRegistros->insertRow(row);
+        for (int c = 0; c < defs.size(); ++c) {
+            const FieldDef& fd = defs[c];
+            QString val;
+            if (fd.type == "Autonumeración" || fd.type == "Número")
+                val = QString::number(1000 + i*10 + c);
+            else if (fd.type == "Fecha/Hora")
+                val = QDate::currentDate().addDays(-i).toString("yyyy-MM-dd");
+            else if (fd.type == "Moneda")
+                val = QString::number((i*3+c)*10);
+            else
+                val = QString("Texto %1").arg(i+1);
+
+            ui->twRegistros->setItem(row, c, new QTableWidgetItem(val));
+        }
+    }
+}
+
+/* =================== Helpers de estado/UI =================== */
 
 void RecordsPage::setMode(Mode m)
 {
@@ -113,7 +179,7 @@ void RecordsPage::updateStatusLabels()
     ui->lblPagina->setText(QStringLiteral("%1 / %2").arg(m_currentPage).arg(1)); // paginación simple por ahora
 }
 
-// =================== Construcción demo ===================
+/* =================== Construcción demo (sandbox) =================== */
 
 void RecordsPage::construirColumnasDemo()
 {
@@ -147,11 +213,11 @@ void RecordsPage::cargarDatosDemo()
     }
 }
 
-// =================== Acciones de encabezado ===================
+/* =================== Acciones de encabezado =================== */
 
 void RecordsPage::onTablaChanged(int /*index*/)
 {
-    // En esta fase sandbox: reconstruimos columnas y datos de demostración.
+    // En sandbox: reconstruimos columnas y datos demo.
     construirColumnasDemo();
     cargarDatosDemo();
     ui->leBuscar->clear();
@@ -171,7 +237,7 @@ void RecordsPage::onLimpiarBusqueda()
     ui->leBuscar->setFocus();
 }
 
-// =================== Operaciones Insertar / Editar / Eliminar ===================
+/* ============ Operaciones Insertar / Editar / Eliminar ============ */
 
 void RecordsPage::onInsertar()
 {
@@ -234,7 +300,7 @@ void RecordsPage::onCancelar()
     setMode(Mode::Idle);
 }
 
-// =================== Tabla / selección / doble clic ===================
+/* =================== Tabla / selección / doble clic =================== */
 
 void RecordsPage::onSelectionChanged()
 {
@@ -254,7 +320,7 @@ void RecordsPage::onItemDoubleClicked()
     onEditar();
 }
 
-// =================== Editor ===================
+/* =================== Editor =================== */
 
 void RecordsPage::onLimpiarFormulario()
 {
@@ -277,14 +343,14 @@ void RecordsPage::onGenerarDummyFila()
     ui->leExtra3->clear();
 }
 
-// =================== Paginación (mock) ===================
+/* =================== Paginación (mock) =================== */
 
 void RecordsPage::onPrimero()  { m_currentPage = 1; updateStatusLabels(); }
 void RecordsPage::onAnterior() { m_currentPage = qMax(1, m_currentPage - 1); updateStatusLabels(); }
 void RecordsPage::onSiguiente(){ m_currentPage = m_currentPage + 1; updateStatusLabels(); }
 void RecordsPage::onUltimo()   { m_currentPage = m_currentPage + 1; updateStatusLabels(); }
 
-// =================== Utilidades de formulario/tabla ===================
+/* =================== Utilidades de formulario/tabla =================== */
 
 void RecordsPage::limpiarFormulario()
 {
@@ -347,7 +413,7 @@ int RecordsPage::agregarFilaDesdeFormulario()
     return row;
 }
 
-// ----------------- Búsqueda -----------------
+/* ----------------- Búsqueda ----------------- */
 
 bool RecordsPage::filaCoincideBusqueda(int row, const QString& term) const
 {

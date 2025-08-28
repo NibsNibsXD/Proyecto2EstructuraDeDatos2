@@ -1,5 +1,7 @@
 #include "shellwindow.h"
 #include "tablespage.h"
+#include "recordspage.h"
+#include "datamodel.h"
 
 #include <QApplication>
 #include <QScreen>
@@ -17,7 +19,6 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QAction>
-
 
 // Tamaños base
 static constexpr int kWinW   = 1400;
@@ -39,11 +40,12 @@ static QWidget* vSep(int h = 64) {
     auto *sep = new QFrame;
     sep->setFrameShape(QFrame::VLine);
     sep->setFrameShadow(QFrame::Plain);
-    sep->setStyleSheet("color:#c8c8c8;");  // tono como Access
-    sep->setFixedHeight(h);                // alto visible
+    sep->setStyleSheet("color:#c8c8c8;");
+    sep->setFixedHeight(h);
     return sep;
 }
-// --- Panel izquierdo tipo Access ---
+
+// --- Panel izquierdo tipo Access (no usado directamente, dejamos helper por si se necesita) ---
 static QWidget* buildLeftPanel(int width, int height) {
     auto *panel = new QWidget;
     panel->setFixedSize(width, height);
@@ -51,30 +53,20 @@ static QWidget* buildLeftPanel(int width, int height) {
 
     auto *v = new QVBoxLayout(panel);
     v->setContentsMargins(0,0,0,0);
-    v->setSpacing(6); // ← DA RESPIRO ENTRE HEADER Y SEARCH
+    v->setSpacing(6);
 
-    // Encabezado "Tablas" (burdeos)
     auto *hdr = new QLabel("Tablas");
     hdr->setFixedHeight(32);
     hdr->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     hdr->setStyleSheet("background:#9f3639; color:white; font-weight:bold; font-size:20px; padding:6px 8px;");
 
-    // Caja de búsqueda con icono de lupa
     auto *search = new QLineEdit;
     search->setPlaceholderText("Search");
     search->setFixedHeight(26);
     search->setClearButtonEnabled(true);
-    search->setStyleSheet(
-        "QLineEdit{border:1px solid #c8c8c8; padding:2px 6px; margin:0 6px;}"
-        );
-    // Lupa (leading action)
-    search->addAction(
-        qApp->style()->standardIcon(QStyle::SP_FileDialogContentsView),
-        QLineEdit::LeadingPosition
-        );
+    search->setStyleSheet("QLineEdit{border:1px solid #c8c8c8; padding:2px 6px; margin:0 6px;}");
+    search->addAction(qApp->style()->standardIcon(QStyle::SP_FileDialogContentsView), QLineEdit::LeadingPosition);
 
-
-    // Lista
     auto *list = new QListWidget;
     list->setFrameShape(QFrame::NoFrame);
     list->setIconSize(QSize(18,18));
@@ -94,7 +86,7 @@ static QWidget* buildLeftPanel(int width, int height) {
     return panel;
 }
 
-// --- NUEVO: barra de navegación tipo Access (1140x36) ---
+// --- Barra de navegación tipo Access (1140x36) ---
 static QWidget* buildRecordNavigator(int width, int height) {
     auto *bar = new QWidget;
     bar->setFixedSize(width, height);
@@ -104,11 +96,9 @@ static QWidget* buildRecordNavigator(int width, int height) {
     hl->setContentsMargins(8,4,8,4);
     hl->setSpacing(10);
 
-    // "Record:"
     auto *recLbl = new QLabel("Record:");
     recLbl->setStyleSheet("color:#444; background:transparent; border:none;");
 
-    // Botones navegación (sin borde)
     auto makeNav = [](QStyle::StandardPixmap sp, bool enabled=true){
         auto *b = new QToolButton;
         b->setAutoRaise(false);
@@ -122,11 +112,9 @@ static QWidget* buildRecordNavigator(int width, int height) {
     auto *nextBtn  = makeNav(QStyle::SP_ArrowForward, false);
     auto *lastBtn  = makeNav(QStyle::SP_MediaSkipForward, false);
 
-    // "1 of 1"
     auto *pos = new QLabel("1 of 1");
     pos->setStyleSheet("background:transparent; border:none; color:#333; padding:2px;");
 
-    // Botón de filtro ON/OFF
     auto *filterBtn = new QToolButton;
     filterBtn->setCheckable(true);
     filterBtn->setAutoRaise(true);
@@ -148,13 +136,11 @@ static QWidget* buildRecordNavigator(int width, int height) {
         }
     });
 
-    // Search box (ancho fijo grande)
     auto *search = new QLineEdit;
     search->setPlaceholderText("Search");
     search->setFixedWidth(240);
     search->setStyleSheet("background:white; border:1px solid #c8c8c8; padding:2px 6px;");
 
-    // Ensamble
     hl->addWidget(recLbl);
     hl->addWidget(firstBtn);
     hl->addWidget(prevBtn);
@@ -178,10 +164,6 @@ static QWidget* buildRecordNavigator(int width, int height) {
 
     return bar;
 }
-
-
-
-
 
 // ----------------- helpers de estilo -----------------
 static QToolButton* makeTabBtn(const QString& text) {
@@ -210,7 +192,6 @@ static QToolButton* makeActionBtn(const QString& text, const QString& iconPath =
         b->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
         b->setIconSize(QSize(24,24));
     } else {
-        // Elegir un ícono default según el texto
         if (text.contains("New", Qt::CaseInsensitive))
             icon = qApp->style()->standardIcon(QStyle::SP_FileIcon);
         else if (text.contains("Save", Qt::CaseInsensitive))
@@ -247,8 +228,6 @@ static QToolButton* makeActionBtn(const QString& text, const QString& iconPath =
             icon = qApp->style()->standardIcon(QStyle::SP_FileDialogListView);
         else if (text.contains("Compact", Qt::CaseInsensitive))
             icon = qApp->style()->standardIcon(QStyle::SP_DialogResetButton);
-
-
         else
             icon = qApp->style()->standardIcon(QStyle::SP_FileIcon);
 
@@ -269,7 +248,6 @@ static QToolButton* makeActionBtn(const QString& text, const QString& iconPath =
     return b;
 }
 
-
 static QWidget* makeRibbonGroup(const QString& title, const QList<QToolButton*>& buttons) {
     auto *wrap = new QWidget;
     wrap->setAttribute(Qt::WA_StyledBackground, true);
@@ -278,7 +256,6 @@ static QWidget* makeRibbonGroup(const QString& title, const QList<QToolButton*>&
     vl->setContentsMargins(6,6,6,0);
     vl->setSpacing(0);
 
-    // título arriba
     auto *cap = new QLabel(title);
     cap->setAlignment(Qt::AlignHCenter);
     cap->setMargin(0);
@@ -286,7 +263,6 @@ static QWidget* makeRibbonGroup(const QString& title, const QList<QToolButton*>&
     cap->setStyleSheet("font-size:12px; font-weight:bold; "
                        "color:#222; background:transparent; border:none; padding:0;");
 
-    // fila de botones centrada
     auto *row = new QHBoxLayout;
     row->setContentsMargins(0,0,0,0);
     row->setSpacing(8);
@@ -294,7 +270,6 @@ static QWidget* makeRibbonGroup(const QString& title, const QList<QToolButton*>&
     for (auto *btn : buttons) row->addWidget(btn);
     row->addStretch();
 
-    // contenedor para la fila
     auto *frame = new QWidget;
     frame->setAttribute(Qt::WA_StyledBackground, true);
     frame->setStyleSheet("background:transparent; border:none;");
@@ -303,14 +278,10 @@ static QWidget* makeRibbonGroup(const QString& title, const QList<QToolButton*>&
     frameLay->setSpacing(0);
     frameLay->addLayout(row);
 
-    // ahora el orden es título arriba, fila abajo
     vl->addWidget(cap);
     vl->addWidget(frame);
     return wrap;
 }
-
-
-
 
 // ------------------------------------------------------
 
@@ -393,7 +364,7 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     auto *tablesPage = new TablesPage(nullptr, false);
     auto *list = tablesPage->tableListWidget();
 
-    // =============== Panel izquierdo tipo Access (260x610) ===============
+    // =============== Panel izquierdo (260x610) ===============
     auto *leftPanel = new QWidget;
     leftPanel->setFixedSize(kLeftW, kContentH);
     leftPanel->setStyleSheet("background:white; border-right:1px solid #b0b0b0;");
@@ -402,13 +373,11 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     v->setContentsMargins(0,0,0,0);
     v->setSpacing(6);
 
-    // Encabezado "Tablas"
     auto *hdr = new QLabel("Tablas");
     hdr->setFixedHeight(32);
     hdr->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
     hdr->setStyleSheet("background:#9f3639; color:white; font-weight:bold; font-size:20px; padding:6px 8px;");
 
-    // Search con icono default Qt
     auto *search = new QLineEdit;
     search->setPlaceholderText("Search");
     search->setFixedHeight(26);
@@ -424,6 +393,14 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         "QListWidget::item{padding:6px 8px;}"
         "QListWidget::item:selected{background:#f4c9cc;}"
         );
+
+    // Filtrar la lista (simple)
+    QObject::connect(search, &QLineEdit::textChanged, list, [list](const QString& t){
+        for (int i = 0; i < list->count(); ++i) {
+            auto *it = list->item(i);
+            it->setHidden(!it->text().contains(t, Qt::CaseInsensitive));
+        }
+    });
 
     v->addWidget(hdr);
     v->addWidget(search);
@@ -454,10 +431,12 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         return page;
     };
 
-    stack->addWidget(tablesPage);
-    stack->addWidget(makePage("Registros"));
-    stack->addWidget(makePage("Consultas"));
-    stack->addWidget(makePage("Relaciones"));
+    auto *recordsPage = new RecordsPage;          // <-- tu página de Registros real
+
+    stack->addWidget(tablesPage);                 // index 0 (Design)
+    stack->addWidget(recordsPage);                // index 1 (Datasheet)
+    stack->addWidget(makePage("Consultas"));      // index 2
+    stack->addWidget(makePage("Relaciones"));     // index 3
 
     auto *navigator = buildRecordNavigator(kRightW, kBottomReserveH);
     rightV->addWidget(stack);
@@ -481,17 +460,52 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     vbox->addLayout(hbox);
 
     setCentralWidget(central);
-
     ribbonStack->setCurrentIndex(0);
 
-    // Conexión selección lista
-    connect(list, &QListWidget::itemClicked, this, [=](QListWidgetItem*){
-        stack->setCurrentWidget(tablesPage);
+    // ====== Conexiones: TablesPage -> RecordsPage ======
+
+    // Al seleccionar una tabla (emisión desde TablesPage)
+    connect(tablesPage, &TablesPage::tableSelected, this,
+            [=](const QString& name){
+                recordsPage->setTableFromFieldDefs(name, tablesPage->schemaFor(name));
+                stack->setCurrentWidget(recordsPage); // ir a Datasheet
+            });
+
+    // Si cambia el esquema (añadir/renombrar/eliminar campo), refrescar si es la actual
+    connect(tablesPage, &TablesPage::schemaChanged, this,
+            [=](const QString& name, const Schema& s){
+                auto *it = list->currentItem();
+                if (it && it->text() == name) {
+                    recordsPage->setTableFromFieldDefs(name, s);
+                }
+            });
+
+    // También reaccionar a clicks en la lista (por UX)
+    connect(list, &QListWidget::itemClicked, this, [=](QListWidgetItem* it){
+        if (!it) return;
+        const QString t = it->text();
+        recordsPage->setTableFromFieldDefs(t, tablesPage->schemaFor(t));
+        stack->setCurrentWidget(recordsPage);
     });
+
+    // ====== Ribbon: Views (Datasheet / Design) ======
+    QToolButton *btnDatasheet = nullptr, *btnDesign = nullptr;
+    for (auto *b : ribbonStack->widget(0)->findChildren<QToolButton*>()) {
+        if (b->text() == "Datasheet") btnDatasheet = b;
+        if (b->text() == "Design")    btnDesign    = b;
+    }
+    if (btnDatasheet) connect(btnDatasheet, &QToolButton::clicked, this, [=]{
+            auto *it = list->currentItem();
+            if (it) {
+                const QString t = it->text();
+                recordsPage->setTableFromFieldDefs(t, tablesPage->schemaFor(t));
+            }
+            stack->setCurrentWidget(recordsPage);
+        });
+    if (btnDesign) connect(btnDesign, &QToolButton::clicked, this, [=]{
+            stack->setCurrentWidget(tablesPage);
+        });
 }
-
-
-
 
 // Centrar ventana
 void ShellWindow::showEvent(QShowEvent* e) {
@@ -547,7 +561,6 @@ QWidget* ShellWindow::buildHomeRibbon() {
     return wrap;
 }
 
-
 QWidget* ShellWindow::buildCreateRibbon() {
     auto *wrap = new QWidget;
     auto *hl = new QHBoxLayout(wrap);
@@ -571,29 +584,24 @@ QWidget* ShellWindow::buildCreateRibbon() {
     return wrap;
 }
 
-
 QWidget* ShellWindow::buildDBToolsRibbon() {
     auto *wrap = new QWidget;
     auto *hl = new QHBoxLayout(wrap);
     hl->setContentsMargins(8,2,8,2);
     hl->setSpacing(16);
 
-    // Indexes (único botón)
     auto *gIdx = makeRibbonGroup("Indexes", {
-                                                makeActionBtn("Indexes")   // caerá en el icono default de "Index"
-                                            });
+        makeActionBtn("Indexes")
+    });
 
-    // Relationships (nuevo grupo)
     auto *gRel = makeRibbonGroup("Relationships", {
         makeActionBtn("Relationships")
     });
 
-    // Avail List
     auto *gAvail = makeRibbonGroup("Avail List", {
         makeActionBtn("Avail List")
     });
 
-    // Compact
     auto *gCompact = makeRibbonGroup("Compact", {
         makeActionBtn("Compact")
     });
@@ -608,4 +616,3 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
     hl->addStretch();
     return wrap;
 }
-

@@ -11,30 +11,23 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QMap>
-
-struct FieldDef {
-    QString name;
-    QString type;      // Autonumeración, Número, Fecha/Hora, Moneda, Texto corto
-    int     size = 0;  // tamaño/precisión sugerido
-    bool    pk = false;
-
-    // Propiedades (maqueta)
-    QString formato;
-    QString mascaraEntrada;
-    QString titulo;
-    QString valorPredeterminado;
-    QString reglaValidacion;
-    QString textoValidacion;
-    bool    requerido = false;
-    QString indexado; // No / Sí (con duplicados) / Sí (sin duplicados)
-};
+#include "datamodel.h"   // <- Define FieldDef y using Schema = QList<FieldDef>
 
 class TablesPage : public QWidget {
     Q_OBJECT
 public:
     explicit TablesPage(QWidget *parent = nullptr, bool withSidebar = true);
-    QListWidget* tableListWidget() const { return tablesList; }
 
+    // Accesos para integración
+    QListWidget* tableListWidget() const { return tablesList; }
+    Schema       schemaFor(const QString& tableName) const { return dbMock.value(tableName); }
+    QStringList  tableNames() const { return dbMock.keys(); }
+
+signals:
+    // Notifica a Shell/RecordsPage
+    void tableSelected(const QString& name);
+    void schemaChanged(const QString& name, const Schema& schema);
+    void tablesListChanged(const QStringList& names);
 
 private slots:
     // acciones de tabla/campos
@@ -52,37 +45,37 @@ private slots:
 
 private:
     // Sidebar (lista de tablas)
-    QListWidget  *tablesList;
+    QListWidget  *tablesList = nullptr;
 
     // Barra superior
-    QLineEdit    *tableNameEdit;
-    QLineEdit    *tableDescEdit;     // NUEVO: descripción de tabla
-    QPushButton  *btnNueva;
-    QPushButton  *btnEditar;
-    QPushButton  *btnEliminar;
+    QLineEdit    *tableNameEdit = nullptr;
+    QLineEdit    *tableDescEdit = nullptr;     // descripción de tabla
+    QPushButton  *btnNueva = nullptr;
+    QPushButton  *btnEditar = nullptr;
+    QPushButton  *btnEliminar = nullptr;
 
     // Grid central de campos
-    QTableWidget *fieldsTable;
-    QPushButton  *btnAddField;
-    QPushButton  *btnRemoveField;
+    QTableWidget *fieldsTable = nullptr;
+    QPushButton  *btnAddField = nullptr;
+    QPushButton  *btnRemoveField = nullptr;
 
     // Propiedades abajo
-    QTabWidget   *propTabs;
+    QTabWidget   *propTabs = nullptr;
 
     // General
-    QLineEdit    *propFormato;
-    QLineEdit    *propMascara;
-    QLineEdit    *propTitulo;
-    QLineEdit    *propValorPred;
-    QLineEdit    *propReglaVal;
-    QLineEdit    *propTextoVal;
-    QCheckBox    *propRequerido;
-    QComboBox    *propIndexado;
+    QLineEdit    *propFormato = nullptr;
+    QLineEdit    *propMascara = nullptr;
+    QLineEdit    *propTitulo = nullptr;
+    QLineEdit    *propValorPred = nullptr;
+    QLineEdit    *propReglaVal = nullptr;
+    QLineEdit    *propTextoVal = nullptr;
+    QCheckBox    *propRequerido = nullptr;
+    QComboBox    *propIndexado = nullptr;
 
-    // Datos en memoria: nombreTabla -> lista de campos
-    QMap<QString, QList<FieldDef>> dbMock;
+    // Datos en memoria: nombreTabla -> lista de campos (Schema)
+    QMap<QString, Schema> dbMock;
 
-    // NUEVO: memoria de descripciones por tabla
+    // Descripciones por tabla
     QMap<QString, QString> tableDesc_;   // nombreTabla -> descripción
 
     // helpers UI
@@ -96,10 +89,10 @@ private:
     void connectRowEditors(int row);
     QString currentTableName() const;
 
-    // NUEVO: helper para limpiar panel de propiedades
+    // limpiar panel de propiedades
     void clearPropsUi();
 
-    // helpers de validación/consulta
+    // validación/consulta
     bool tableExists(const QString& name) const;
     bool isValidTableName(const QString& name) const;
 
