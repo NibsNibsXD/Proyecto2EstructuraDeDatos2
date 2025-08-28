@@ -1,4 +1,5 @@
 #include "shellwindow.h"
+#include "tablespage.h"
 
 #include <QApplication>
 #include <QScreen>
@@ -16,8 +17,6 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QAction>
-
-
 
 
 // Tamaños base
@@ -377,33 +376,66 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     iconBarLay->setContentsMargins(8,4,8,6);
     iconBarLay->setSpacing(0);
 
-    // Stacked con páginas de cada menú
     ribbonStack = new QStackedWidget;
     ribbonStack->setContentsMargins(0,0,0,0);
 
-    ribbonStack->addWidget(buildHomeRibbon());     // index 0
-    ribbonStack->addWidget(buildCreateRibbon());   // index 1 (placeholder)
-    ribbonStack->addWidget(buildDBToolsRibbon());  // index 2 (placeholder)
+    ribbonStack->addWidget(buildHomeRibbon());
+    ribbonStack->addWidget(buildCreateRibbon());
+    ribbonStack->addWidget(buildDBToolsRibbon());
 
     iconBarLay->addWidget(ribbonStack);
 
-    // Cambiar página al pulsar pestañas
     connect(homeBtn,    &QToolButton::toggled, this, [this](bool on){ if(on) ribbonStack->setCurrentIndex(0); });
     connect(createBtn,  &QToolButton::toggled, this, [this](bool on){ if(on) ribbonStack->setCurrentIndex(1); });
     connect(dbToolsBtn, &QToolButton::toggled, this, [this](bool on){ if(on) ribbonStack->setCurrentIndex(2); });
 
-    // =============== Panel izquierdo (260x610) ===============
-    auto *leftPanel = buildLeftPanel(kLeftW, kContentH);
+    // === PÁGINA TABLAS REAL ===
+    auto *tablesPage = new TablesPage(nullptr, false);
+    auto *list = tablesPage->tableListWidget();
 
+    // =============== Panel izquierdo tipo Access (260x610) ===============
+    auto *leftPanel = new QWidget;
+    leftPanel->setFixedSize(kLeftW, kContentH);
+    leftPanel->setStyleSheet("background:white; border-right:1px solid #b0b0b0;");
 
-    // =============== Derecha: contenedor (1140x610) con stack + reserva ===============
+    auto *v = new QVBoxLayout(leftPanel);
+    v->setContentsMargins(0,0,0,0);
+    v->setSpacing(6);
+
+    // Encabezado "Tablas"
+    auto *hdr = new QLabel("Tablas");
+    hdr->setFixedHeight(32);
+    hdr->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+    hdr->setStyleSheet("background:#9f3639; color:white; font-weight:bold; font-size:20px; padding:6px 8px;");
+
+    // Search con icono default Qt
+    auto *search = new QLineEdit;
+    search->setPlaceholderText("Search");
+    search->setFixedHeight(26);
+    search->setClearButtonEnabled(true);
+    search->setStyleSheet("QLineEdit{border:1px solid #c8c8c8; padding:2px 6px; margin:0 6px;}");
+    search->addAction(qApp->style()->standardIcon(QStyle::SP_FileDialogContentsView), QLineEdit::LeadingPosition);
+
+    // Lista real de TablesPage, con mismo estilo
+    list->setFrameShape(QFrame::NoFrame);
+    list->setIconSize(QSize(18,18));
+    list->setStyleSheet(
+        "QListWidget{border:none;}"
+        "QListWidget::item{padding:6px 8px;}"
+        "QListWidget::item:selected{background:#f4c9cc;}"
+        );
+
+    v->addWidget(hdr);
+    v->addWidget(search);
+    v->addWidget(list, 1);
+
+    // =============== Derecha: stack + reserva ===============
     auto *rightContainer = new QWidget;
     rightContainer->setFixedSize(kRightW, kContentH);
     auto *rightV = new QVBoxLayout(rightContainer);
     rightV->setContentsMargins(0,0,0,0);
     rightV->setSpacing(0);
 
-    // Stack arriba (1140x574)
     auto *stack = new QStackedWidget;
     stack->setFixedSize(kRightW, kStackH);
     stack->setStyleSheet("background:white; border:1px solid #b0b0b0;");
@@ -421,7 +453,8 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         layout->addStretch();
         return page;
     };
-    stack->addWidget(makePage("Tablas"));
+
+    stack->addWidget(tablesPage);
     stack->addWidget(makePage("Registros"));
     stack->addWidget(makePage("Consultas"));
     stack->addWidget(makePage("Relaciones"));
@@ -430,14 +463,14 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     rightV->addWidget(stack);
     rightV->addWidget(navigator);
 
-    // =============== Layout horizontal ===============
+    // Layout horizontal
     auto *hbox = new QHBoxLayout;
     hbox->setContentsMargins(0,0,0,0);
     hbox->setSpacing(0);
     hbox->addWidget(leftPanel);
     hbox->addWidget(rightContainer);
 
-    // =============== Layout central ===============
+    // Layout central
     auto *central = new QWidget(this);
     auto *vbox = new QVBoxLayout(central);
     vbox->setContentsMargins(0,0,0,0);
@@ -449,9 +482,16 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
 
     setCentralWidget(central);
 
-    // Página por defecto
-    ribbonStack->setCurrentIndex(0); // Home
+    ribbonStack->setCurrentIndex(0);
+
+    // Conexión selección lista
+    connect(list, &QListWidget::itemClicked, this, [=](QListWidgetItem*){
+        stack->setCurrentWidget(tablesPage);
+    });
 }
+
+
+
 
 // Centrar ventana
 void ShellWindow::showEvent(QShowEvent* e) {

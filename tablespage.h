@@ -32,7 +32,9 @@ struct FieldDef {
 class TablesPage : public QWidget {
     Q_OBJECT
 public:
-    explicit TablesPage(QWidget *parent = nullptr);
+    explicit TablesPage(QWidget *parent = nullptr, bool withSidebar = true);
+    QListWidget* tableListWidget() const { return tablesList; }
+
 
 private slots:
     // acciones de tabla/campos
@@ -100,6 +102,9 @@ private:
     // helpers de validación/consulta
     bool tableExists(const QString& name) const;
     bool isValidTableName(const QString& name) const;
+
+    bool withSidebar_ = true;
+    QWidget *sidebarBox_ = nullptr;
 };
 
 #endif // TABLESPAGE_H

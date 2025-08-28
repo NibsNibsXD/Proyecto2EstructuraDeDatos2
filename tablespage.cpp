@@ -10,6 +10,7 @@
 #include <QInputDialog>
 #include <QRegularExpression>
 #include <algorithm>
+#include <QApplication>
 
 /* ===== Helpers ===== */
 static QStringList kTypes() {
@@ -17,7 +18,8 @@ static QStringList kTypes() {
 }
 
 /* ===== Constructor ===== */
-TablesPage::TablesPage(QWidget *parent) : QWidget(parent) {
+TablesPage::TablesPage(QWidget *parent, bool withSidebar)
+    : QWidget(parent), withSidebar_(withSidebar) {
     setupUi();
     setupFakeData();
     applyQss();
@@ -33,13 +35,18 @@ void TablesPage::setupUi() {
     QHBoxLayout *root = new QHBoxLayout(this);
 
     // -------- Panel izquierdo: lista de tablas --------
-    QVBoxLayout *left = new QVBoxLayout;
-    QLabel *lblTablas = new QLabel("Tablas");
-    lblTablas->setObjectName("lblSideTitle");
-    tablesList = new QListWidget;
-    tablesList->setMinimumWidth(190);
-    left->addWidget(lblTablas);
-    left->addWidget(tablesList, 1);
+    if (withSidebar_) {
+        QVBoxLayout *left = new QVBoxLayout;
+        QLabel *lblTablas = new QLabel("Tablas");
+        lblTablas->setObjectName("lblSideTitle");
+        tablesList = new QListWidget;
+        tablesList->setMinimumWidth(190);
+        left->addWidget(lblTablas);
+        left->addWidget(tablesList, 1);
+        root->addLayout(left, 0);
+    } else {
+        tablesList = new QListWidget;  // sigue existiendo, pero no se muestra
+    }
 
     // -------- Panel central --------
     QVBoxLayout *center = new QVBoxLayout;
@@ -53,9 +60,9 @@ void TablesPage::setupUi() {
     tableDescEdit = new QLineEdit;
     tableDescEdit->setPlaceholderText("Descripción de la tabla (opcional)");
 
-    btnNueva   = new QPushButton("Nueva");
-    btnEditar  = new QPushButton("Renombrar");
-    btnEliminar= new QPushButton("Eliminar");
+    btnNueva    = new QPushButton("Nueva");
+    btnEditar   = new QPushButton("Renombrar");
+    btnEliminar = new QPushButton("Eliminar");
 
     topBar->addWidget(new QLabel("Diseñando:"));
     topBar->addWidget(tableNameEdit, 1);
@@ -84,7 +91,7 @@ void TablesPage::setupUi() {
 
     // Botones de campos
     QHBoxLayout *fieldBtns = new QHBoxLayout;
-    btnAddField = new QPushButton("Añadir campo");
+    btnAddField    = new QPushButton("Añadir campo");
     btnRemoveField = new QPushButton("Eliminar campo");
     fieldBtns->addWidget(btnAddField);
     fieldBtns->addWidget(btnRemoveField);
@@ -124,23 +131,22 @@ void TablesPage::setupUi() {
     propTabs->addTab(general,  "General");
     propTabs->addTab(busqueda, "Búsqueda");
 
-    // Ensamblar
+    // Ensamblar central
     center->addLayout(topBar);
     center->addWidget(fieldsTable, 1);
     center->addLayout(fieldBtns);
     center->addWidget(propTabs);
 
-    root->addLayout(left, 0);
-    root->addLayout(center, 1);
+    root->addLayout(center, 1);   // <-- ahora solo agregamos el central aquí
 
     // Conexiones
     connect(tablesList,        &QListWidget::currentRowChanged, this, &TablesPage::onSelectTable);
-    connect(btnAddField,       &QPushButton::clicked,            this, &TablesPage::onAddField);
-    connect(btnRemoveField,    &QPushButton::clicked,            this, &TablesPage::onRemoveField);
-    connect(btnNueva,          &QPushButton::clicked,            this, &TablesPage::onNuevaTabla);
-    connect(btnEditar,         &QPushButton::clicked,            this, &TablesPage::onEditarTabla);
-    connect(btnEliminar,       &QPushButton::clicked,            this, &TablesPage::onEliminarTabla);
-    connect(fieldsTable,       &QTableWidget::itemChanged,       this, &TablesPage::onNameItemEdited);
+    connect(btnAddField,       &QPushButton::clicked,           this, &TablesPage::onAddField);
+    connect(btnRemoveField,    &QPushButton::clicked,           this, &TablesPage::onRemoveField);
+    connect(btnNueva,          &QPushButton::clicked,           this, &TablesPage::onNuevaTabla);
+    connect(btnEditar,         &QPushButton::clicked,           this, &TablesPage::onEditarTabla);
+    connect(btnEliminar,       &QPushButton::clicked,           this, &TablesPage::onEliminarTabla);
+    connect(fieldsTable,       &QTableWidget::itemChanged,      this, &TablesPage::onNameItemEdited);
 
     connect(fieldsTable->selectionModel(), &QItemSelectionModel::selectionChanged,
             this, &TablesPage::onFieldSelectionChanged);
@@ -161,6 +167,7 @@ void TablesPage::setupUi() {
         if (!t.isEmpty()) tableDesc_[t] = txt;
     });
 }
+
 
 void TablesPage::applyQss() {
     setStyleSheet(R"(
@@ -246,7 +253,11 @@ void TablesPage::setupFakeData() {
     tableDesc_["Clase"]     = "Catálogo de clases/assignaturas.";
     tableDesc_["Matricula"] = "Relación de inscripciones por período.";
 
-    tablesList->addItems({"Alumno", "Clase", "Matricula"});
+    auto icon = qApp->style()->standardIcon(QStyle::SP_FileDialogDetailedView);
+
+    tablesList->addItem(new QListWidgetItem(icon, "Alumno"));
+    tablesList->addItem(new QListWidgetItem(icon, "Clase"));
+    tablesList->addItem(new QListWidgetItem(icon, "Matricula"));
 }
 
 QString TablesPage::currentTableName() const {
@@ -510,7 +521,8 @@ void TablesPage::onNuevaTabla() {
     tableDesc_[name] = QString();
 
     // UI: agregar a la lista y seleccionar
-    tablesList->addItem(name);
+    auto icon = qApp->style()->standardIcon(QStyle::SP_FileDialogDetailedView);
+    tablesList->addItem(new QListWidgetItem(icon, name));
     tablesList->setCurrentRow(tablesList->count() - 1);
 
     // Refrescar diseñador

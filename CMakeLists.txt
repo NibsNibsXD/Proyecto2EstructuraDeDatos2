@@ -24,18 +24,26 @@ function(collect_existing out_var)
 endfunction()
 
 # ============================================================
+# LIBRERÍA COMÚN DE PÁGINAS
+# ============================================================
+add_library(pages STATIC
+  tablespage.cpp
+  tablespage.h
+)
+target_link_libraries(pages PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+
+# ============================================================
 # A) App integrada (opcional)
 # ============================================================
-# acepta: app_miniaccess/* ó archivos en la raíz
 collect_existing(APP_SRCS
   app_miniaccess/main.cpp     main.cpp
   app_miniaccess/mainwindow.cpp  mainwindow.cpp
   app_miniaccess/mainwindow.h    mainwindow.h
   app_miniaccess/mainwindow.ui   mainwindow.ui
 )
-if(APP_SRCS)  # solo crea el target si existe main.cpp en alguna ruta
+if(APP_SRCS)
   add_executable(app_miniaccess ${APP_SRCS})
-  target_link_libraries(app_miniaccess PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+  target_link_libraries(app_miniaccess PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
 endif()
 
 # ============================================================
@@ -50,22 +58,19 @@ collect_existing(SHELL_SRCS
 )
 if(SHELL_SRCS)
   add_executable(shell_sandbox ${SHELL_SRCS})
-  target_link_libraries(shell_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+  target_link_libraries(shell_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
 endif()
-
 # ============================================================
 # C) Sandbox Tablas (Persona B)
 # ============================================================
 collect_existing(TABLES_SRCS
-  tables_sandbox/tables_sandbox.cpp  tables_sandbox.cpp
-  tables_sandbox/tablespage.cpp      tablespage.cpp
-  tables_sandbox/tablespage.h        tablespage.h
-  tables_sandbox/resources_tables.qrc  resources_tables.qrc
-  tables_sandbox/tablespage.ui       tablespage.ui
+  tables_sandbox.cpp
+  resources_tables.qrc
+  tablespage.ui
 )
 if(TABLES_SRCS)
   add_executable(tables_sandbox ${TABLES_SRCS})
-  target_link_libraries(tables_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+  target_link_libraries(tables_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
 endif()
 
 # ============================================================
@@ -80,5 +85,5 @@ collect_existing(DATA_SRCS
 )
 if(DATA_SRCS)
   add_executable(data_sandbox ${DATA_SRCS})
-  target_link_libraries(data_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets)
+  target_link_libraries(data_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
 endif()
