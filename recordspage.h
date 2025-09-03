@@ -2,7 +2,8 @@
 #define RECORDSPAGE_H
 
 #include <QWidget>
-#include "datamodel.h"   // Schema / FieldDef / Record
+#include <QMetaObject>
+#include "datamodel.h"   // FieldDef / Schema / DataModel
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class RecordsPage; }
@@ -21,10 +22,19 @@ signals:
     void recordUpdated(const QString& tabla, int row);
     void recordDeleted(const QString& tabla, const QList<int>& rows);
 
+    // NUEVO: estado de navegación (posición visible/total y habilitar prev/next)
+    void navState(int current, int total, bool canPrev, bool canNext);
+
 public slots:
     // === Integración con TablesPage/Shell ===
     // Recibe el nombre de la tabla y su esquema (lista de campos) y reconstruye la grilla
     void setTableFromFieldDefs(const QString& name, const Schema& defs);
+
+    // === Navegación real (sobre filas visibles) ===
+    void navFirst();
+    void navPrev();
+    void navNext();
+    void navLast();
 
 private slots:
     // Encabezado / acciones
@@ -34,14 +44,14 @@ private slots:
     void onInsertar();
     void onEditar();
     void onEliminar();
-    void onGuardar();
-    void onCancelar();
+    void onGuardar();   // (no usado en el CRUD real; se mantienen por compat.)
+    void onCancelar();  // (no usado en el CRUD real; se mantienen por compat.)
 
     // Tabla
     void onSelectionChanged();
     void onItemDoubleClicked();
 
-    // Editor
+    // Editor (maqueta del panel derecho)
     void onLimpiarFormulario();
     void onGenerarDummyFila();
 
@@ -59,36 +69,48 @@ private:
     int  m_currentPage = 1;
 
     // === Estado de integración ===
-    QString m_tableName;   // tabla actualmente mostrada
-    Schema  m_schema;      // esquema actual
+    QString m_tableName;              // tabla actualmente mostrada
+    Schema  m_schema;                 // esquema actual
+    QMetaObject::Connection m_rowsConn; // suscripción a DataModel::rowsChanged
 
-    // ---- Helpers de UI ----
+    // ---- Helpers de UI (sin estilos) ----
     void setMode(Mode m);
     void updateHeaderButtons();
     void updateStatusLabels();
 
-    // Reconstruye columnas/filas usando el esquema recibido
-    void applyDefs(const Schema& defs);
-    void reloadRowsFromModel();              // vuelve a llenar la QTableWidget desde DataModel
-
-    // Formulario genérico basado en heurísticas por nombre de campo
-    Record buildRecordFromForm() const;      // construye Record alineado al Schema
-    void   setFormFromRecord(const Record&); // vuelca Record al formulario
-
-    // Utilidades varias
-    int  selectedRow() const;
-    bool filaCoincideBusqueda(int row, const QString& term) const;
-    void aplicarFiltroBusqueda(const QString& term);
-
-    // --- (Solo para sandbox legacy; ya no se usan, pero las dejamos por compatibilidad) ---
+    // Demo legacy (se conservan para modo sandbox si no hay tabla)
     void construirColumnasDemo();
     void cargarDatosDemo();
 
-    // Limpiar/llenar form legacy
+    // ---- Nuevo: carga desde DataModel ----
+    void applyDefs(const Schema& defs);   // columnas según esquema
+    void reloadRows();                    // filas desde DataModel::rows(...)
+    QString formatCell(const FieldDef& fd, const QVariant& v) const;
+
+    // Panel maqueta legacy
     void limpiarFormulario();
-    void cargarFormularioDesdeFila(int row);     // ahora usa DataModel
-    void escribirFormularioEnFila(int row);      // ya no se usa (operamos con DataModel)
-    int  agregarFilaDesdeFormulario();           // ya no se usa (operamos con DataModel)
+    void cargarFormularioDesdeFila(int row);
+    void escribirFormularioEnFila(int row);
+    int  agregarFilaDesdeFormulario();
+
+    // Búsqueda
+    bool filaCoincideBusqueda(int row, const QString& term) const;
+    void aplicarFiltroBusqueda(const QString& term);
+
+    // ---- Diálogo dinámico por esquema ----
+    // Devuelve true si el usuario acepta. r es in/out.
+    bool editRecordDialog(const QString& title, const Schema& s, Record& r, bool isInsert, QString* errMsg = nullptr);
+
+    // ---- Navegación (helpers sobre filas visibles) ----
+    int  visibleCount() const;
+    int  firstVisibleRow() const;
+    int  lastVisibleRow() const;
+    int  nextVisibleRowFrom(int row) const;
+    int  prevVisibleRowFrom(int row) const;
+    int  currentSelectedRow() const;            // índice absoluto (todas las filas), -1 si no hay
+    int  visibleIndexOfRow(int row) const;      // 1..N entre visibles; 0 si row oculto/invalid
+    void ensureRowSelected(int row);            // selecciona + hace scroll si es válido
+    void emitNavState();                        // emite navState(...) según selección actual
 };
 
 #endif // RECORDSPAGE_H

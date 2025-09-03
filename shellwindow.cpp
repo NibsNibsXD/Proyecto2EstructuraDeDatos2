@@ -19,6 +19,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QAction>
+#include <QMetaObject>
 
 // Tamaños base
 static constexpr int kWinW   = 1400;
@@ -87,7 +88,8 @@ static QWidget* buildLeftPanel(int width, int height) {
 }
 
 // --- Barra de navegación tipo Access (1140x36) ---
-static QWidget* buildRecordNavigator(int width, int height) {
+// (Conexiones hacia RecordsPage mediante invokeMethod para no depender de su API pública)
+static QWidget* buildRecordNavigator(int width, int height, RecordsPage* recordsPage) {
     auto *bar = new QWidget;
     bar->setFixedSize(width, height);
     bar->setStyleSheet("background:#f3f3f3; border-top:1px solid #c8c8c8;");
@@ -99,29 +101,33 @@ static QWidget* buildRecordNavigator(int width, int height) {
     auto *recLbl = new QLabel("Record:");
     recLbl->setStyleSheet("color:#444; background:transparent; border:none;");
 
-    auto makeNav = [](QStyle::StandardPixmap sp, bool enabled=true){
+    auto makeNav = [](QStyle::StandardPixmap sp, bool enabled=true, const char* objName=nullptr){
         auto *b = new QToolButton;
         b->setAutoRaise(false);
         b->setIcon(qApp->style()->standardIcon(sp));
         b->setEnabled(enabled);
         b->setStyleSheet("QToolButton { border:none; background:transparent; }");
+        if (objName) b->setObjectName(objName);
         return b;
     };
-    auto *firstBtn = makeNav(QStyle::SP_MediaSkipBackward, true);
-    auto *prevBtn  = makeNav(QStyle::SP_ArrowBack, true);
-    auto *nextBtn  = makeNav(QStyle::SP_ArrowForward, false);
-    auto *lastBtn  = makeNav(QStyle::SP_MediaSkipForward, false);
+    auto *firstBtn = makeNav(QStyle::SP_MediaSkipBackward, true,  "btnFirst");
+    auto *prevBtn  = makeNav(QStyle::SP_ArrowBack,        true,  "btnPrev");
+    auto *nextBtn  = makeNav(QStyle::SP_ArrowForward,     true,  "btnNext");
+    auto *lastBtn  = makeNav(QStyle::SP_MediaSkipForward, true,  "btnLast");
 
     auto *pos = new QLabel("1 of 1");
+    pos->setObjectName("lblPos");
     pos->setStyleSheet("background:transparent; border:none; color:#333; padding:2px;");
 
     auto *filterBtn = new QToolButton;
+    filterBtn->setObjectName("btnFilter");
     filterBtn->setCheckable(true);
     filterBtn->setAutoRaise(true);
     filterBtn->setIcon(qApp->style()->standardIcon(QStyle::SP_DialogCancelButton)); // off
     filterBtn->setStyleSheet("QToolButton { border:none; background:transparent; }");
 
     auto *filterLbl = new QLabel("No Filter");
+    filterLbl->setObjectName("lblFilter");
     filterLbl->setStyleSheet("color:#888; background:transparent; border:none; min-width:70px;");
 
     QObject::connect(filterBtn, &QToolButton::toggled, [filterBtn, filterLbl](bool on){
@@ -137,9 +143,33 @@ static QWidget* buildRecordNavigator(int width, int height) {
     });
 
     auto *search = new QLineEdit;
+    search->setObjectName("navSearch");
     search->setPlaceholderText("Search");
     search->setFixedWidth(240);
     search->setStyleSheet("background:white; border:1px solid #c8c8c8; padding:2px 6px;");
+
+    // Conexiones a RecordsPage (usamos invokeMethod con fallback a paginación mock)
+    QObject::connect(firstBtn, &QToolButton::clicked, recordsPage, [recordsPage]{
+        bool ok = QMetaObject::invokeMethod(recordsPage, "navFirst", Qt::DirectConnection);
+        if (!ok) QMetaObject::invokeMethod(recordsPage, "onPrimero", Qt::DirectConnection);
+    });
+    QObject::connect(prevBtn, &QToolButton::clicked, recordsPage, [recordsPage]{
+        bool ok = QMetaObject::invokeMethod(recordsPage, "navPrev", Qt::DirectConnection);
+        if (!ok) QMetaObject::invokeMethod(recordsPage, "onAnterior", Qt::DirectConnection);
+    });
+    QObject::connect(nextBtn, &QToolButton::clicked, recordsPage, [recordsPage]{
+        bool ok = QMetaObject::invokeMethod(recordsPage, "navNext", Qt::DirectConnection);
+        if (!ok) QMetaObject::invokeMethod(recordsPage, "onSiguiente", Qt::DirectConnection);
+    });
+    QObject::connect(lastBtn, &QToolButton::clicked, recordsPage, [recordsPage]{
+        bool ok = QMetaObject::invokeMethod(recordsPage, "navLast", Qt::DirectConnection);
+        if (!ok) QMetaObject::invokeMethod(recordsPage, "onUltimo", Qt::DirectConnection);
+    });
+    QObject::connect(search, &QLineEdit::textChanged, recordsPage, [recordsPage](const QString& t){
+        // equivalente a escribir en la caja de búsqueda de RecordsPage
+        QMetaObject::invokeMethod(recordsPage, "onBuscarChanged", Qt::DirectConnection,
+                                  Q_ARG(QString, t));
+    });
 
     hl->addWidget(recLbl);
     hl->addWidget(firstBtn);
@@ -346,7 +376,7 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
 
     // === PÁGINAS REALES ===
     auto *tablesPage  = new TablesPage(nullptr, false);
-    auto *recordsPage = new RecordsPage;          // ← tu página de Registros
+    auto *recordsPage = new RecordsPage;          // ← página de Registros (CRUD real)
     auto *list        = tablesPage->tableListWidget();
 
     // =============== Panel izquierdo (260x610) ===============
@@ -421,7 +451,7 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     stack->addWidget(makePage("Consultas"));
     stack->addWidget(makePage("Relaciones"));
 
-    auto *navigator = buildRecordNavigator(kRightW, kBottomReserveH);
+    auto *navigator = buildRecordNavigator(kRightW, kBottomReserveH, recordsPage);
     rightV->addWidget(stack);
     rightV->addWidget(navigator);
 
@@ -451,7 +481,22 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     setCentralWidget(central);
     ribbonStack->setCurrentIndex(0);
 
-    // Abrir Registros cuando el usuario hace click en una tabla
+    // ====== Conexiones TablesPage → RecordsPage ======
+    connect(tablesPage, &TablesPage::tableSelected, this,
+            [=](const QString& name){
+                recordsPage->setTableFromFieldDefs(name, tablesPage->schemaFor(name));
+                stack->setCurrentWidget(recordsPage); // ir a Datasheet
+            });
+
+    connect(tablesPage, &TablesPage::schemaChanged, this,
+            [=](const QString& name, const Schema& s){
+                auto *it = list->currentItem();
+                if (it && it->text() == name) {
+                    recordsPage->setTableFromFieldDefs(name, s);
+                }
+            });
+
+    // También reaccionar a clicks directos en la lista
     connect(list, &QListWidget::itemClicked, this, [=](QListWidgetItem* it){
         if (!it) return;
         const QString t = it->text();
@@ -476,6 +521,44 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     if (btnDesign) connect(btnDesign, &QToolButton::clicked, this, [=]{
             stack->setCurrentWidget(tablesPage);
         });
+
+    // ====== Ribbon: Records / Find (wire actions) ======
+    if (auto *homeRibbon = ribbonStack->widget(0)) {
+        const auto btns = homeRibbon->findChildren<QToolButton*>();
+        for (auto *b : btns) {
+            const QString t = b->text();
+            if (t.compare("New", Qt::CaseInsensitive) == 0) {
+                connect(b, &QToolButton::clicked, recordsPage, [recordsPage]{
+                    QMetaObject::invokeMethod(recordsPage, "onInsertar", Qt::DirectConnection);
+                });
+            } else if (t.compare("Delete", Qt::CaseInsensitive) == 0) {
+                connect(b, &QToolButton::clicked, recordsPage, [recordsPage]{
+                    QMetaObject::invokeMethod(recordsPage, "onEliminar", Qt::DirectConnection);
+                });
+            } else if (t.compare("Find", Qt::CaseInsensitive) == 0) {
+                connect(b, &QToolButton::clicked, recordsPage, [recordsPage]{
+                    QMetaObject::invokeMethod(recordsPage, "onLimpiarBusqueda", Qt::DirectConnection);
+                });
+            }
+            // "Save" se deja como placeholder (no aplica en el flujo actual)
+        }
+    }
+
+    // ====== Enlazar estado de navegación (RecordsPage → barra inferior) ======
+    auto posLbl   = navigator->findChild<QLabel*>("lblPos");
+    auto firstBtn = navigator->findChild<QToolButton*>("btnFirst");
+    auto prevBtn  = navigator->findChild<QToolButton*>("btnPrev");
+    auto nextBtn  = navigator->findChild<QToolButton*>("btnNext");
+    auto lastBtn  = navigator->findChild<QToolButton*>("btnLast");
+
+    QObject::connect(recordsPage, &RecordsPage::navState, this,
+                     [posLbl, firstBtn, prevBtn, nextBtn, lastBtn](int cur, int tot, bool canPrev, bool canNext){
+                         if (posLbl)  posLbl->setText(QString("%1 of %2").arg(cur).arg(tot));
+                         if (firstBtn) firstBtn->setEnabled(canPrev);
+                         if (prevBtn)  prevBtn->setEnabled(canPrev);
+                         if (nextBtn)  nextBtn->setEnabled(canNext);
+                         if (lastBtn)  lastBtn->setEnabled(canNext);
+                     });
 }
 
 // Centrar ventana
