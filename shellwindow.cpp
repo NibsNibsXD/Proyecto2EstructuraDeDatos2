@@ -148,22 +148,23 @@ static QWidget* buildRecordNavigator(int width, int height, RecordsPage* records
     search->setFixedWidth(240);
     search->setStyleSheet("background:white; border:1px solid #c8c8c8; padding:2px 6px;");
 
-    // Conexiones a RecordsPage (usamos invokeMethod con fallback a paginación mock)
+    // Conexiones a RecordsPage (usamos invokeMethod para no requerir headers nuevos)
     QObject::connect(firstBtn, &QToolButton::clicked, recordsPage, [recordsPage]{
-        bool ok = QMetaObject::invokeMethod(recordsPage, "navFirst", Qt::DirectConnection);
-        if (!ok) QMetaObject::invokeMethod(recordsPage, "onPrimero", Qt::DirectConnection);
+        QMetaObject::invokeMethod(recordsPage, "navFirst", Qt::DirectConnection);
+        // Fallback a paginación mock si navFirst no existe en esta build:
+        QMetaObject::invokeMethod(recordsPage, "onPrimero", Qt::DirectConnection);
     });
     QObject::connect(prevBtn, &QToolButton::clicked, recordsPage, [recordsPage]{
-        bool ok = QMetaObject::invokeMethod(recordsPage, "navPrev", Qt::DirectConnection);
-        if (!ok) QMetaObject::invokeMethod(recordsPage, "onAnterior", Qt::DirectConnection);
+        QMetaObject::invokeMethod(recordsPage, "navPrev", Qt::DirectConnection);
+        QMetaObject::invokeMethod(recordsPage, "onAnterior", Qt::DirectConnection);
     });
     QObject::connect(nextBtn, &QToolButton::clicked, recordsPage, [recordsPage]{
-        bool ok = QMetaObject::invokeMethod(recordsPage, "navNext", Qt::DirectConnection);
-        if (!ok) QMetaObject::invokeMethod(recordsPage, "onSiguiente", Qt::DirectConnection);
+        QMetaObject::invokeMethod(recordsPage, "navNext", Qt::DirectConnection);
+        QMetaObject::invokeMethod(recordsPage, "onSiguiente", Qt::DirectConnection);
     });
     QObject::connect(lastBtn, &QToolButton::clicked, recordsPage, [recordsPage]{
-        bool ok = QMetaObject::invokeMethod(recordsPage, "navLast", Qt::DirectConnection);
-        if (!ok) QMetaObject::invokeMethod(recordsPage, "onUltimo", Qt::DirectConnection);
+        QMetaObject::invokeMethod(recordsPage, "navLast", Qt::DirectConnection);
+        QMetaObject::invokeMethod(recordsPage, "onUltimo", Qt::DirectConnection);
     });
     QObject::connect(search, &QLineEdit::textChanged, recordsPage, [recordsPage](const QString& t){
         // equivalente a escribir en la caja de búsqueda de RecordsPage
@@ -461,6 +462,33 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         navigator->setVisible(stack->widget(ix) == recordsPage);
     });
 
+    // ====== >>> Wiring de la barra de navegación con RecordsPage::navState <<< ======
+    // Buscar los widgets por objectName dentro del navigator:
+    auto *lblPos   = navigator->findChild<QLabel*>("lblPos");
+    auto *btnFirst = navigator->findChild<QToolButton*>("btnFirst");
+    auto *btnPrev  = navigator->findChild<QToolButton*>("btnPrev");
+    auto *btnNext  = navigator->findChild<QToolButton*>("btnNext");
+    auto *btnLast  = navigator->findChild<QToolButton*>("btnLast");
+
+    // Conectar señal para reflejar posición y habilitar/deshabilitar botones
+    connect(recordsPage, &RecordsPage::navState, this,
+            [=](int cur, int tot, bool canPrev, bool canNext){
+                if (lblPos)  lblPos->setText(QString("%1 of %2").arg(tot == 0 ? 0 : cur).arg(tot));
+                if (btnFirst) btnFirst->setEnabled(canPrev);
+                if (btnPrev)  btnPrev->setEnabled(canPrev);
+                if (btnNext)  btnNext->setEnabled(canNext);
+                if (btnLast)  btnLast->setEnabled(canNext);
+            });
+
+    // Estado inicial seguro y disparo de una actualización
+    if (lblPos) lblPos->setText("0 of 0");
+    if (btnFirst) btnFirst->setEnabled(false);
+    if (btnPrev)  btnPrev->setEnabled(false);
+    if (btnNext)  btnNext->setEnabled(false);
+    if (btnLast)  btnLast->setEnabled(false);
+    // Forzamos una emisión tras montar todo:
+    QMetaObject::invokeMethod(recordsPage, "onSelectionChanged", Qt::QueuedConnection);
+
     // Layout horizontal
     auto *hbox = new QHBoxLayout;
     hbox->setContentsMargins(0,0,0,0);
@@ -543,22 +571,6 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
             // "Save" se deja como placeholder (no aplica en el flujo actual)
         }
     }
-
-    // ====== Enlazar estado de navegación (RecordsPage → barra inferior) ======
-    auto posLbl   = navigator->findChild<QLabel*>("lblPos");
-    auto firstBtn = navigator->findChild<QToolButton*>("btnFirst");
-    auto prevBtn  = navigator->findChild<QToolButton*>("btnPrev");
-    auto nextBtn  = navigator->findChild<QToolButton*>("btnNext");
-    auto lastBtn  = navigator->findChild<QToolButton*>("btnLast");
-
-    QObject::connect(recordsPage, &RecordsPage::navState, this,
-                     [posLbl, firstBtn, prevBtn, nextBtn, lastBtn](int cur, int tot, bool canPrev, bool canNext){
-                         if (posLbl)  posLbl->setText(QString("%1 of %2").arg(cur).arg(tot));
-                         if (firstBtn) firstBtn->setEnabled(canPrev);
-                         if (prevBtn)  prevBtn->setEnabled(canPrev);
-                         if (nextBtn)  nextBtn->setEnabled(canNext);
-                         if (lastBtn)  lastBtn->setEnabled(canNext);
-                     });
 }
 
 // Centrar ventana
