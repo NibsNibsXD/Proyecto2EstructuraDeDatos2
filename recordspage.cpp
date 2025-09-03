@@ -15,7 +15,8 @@
 #include <QLabel>
 #include <QTableWidgetItem>
 #include <QSignalBlocker>
-#include <algorithm>        // std::sort
+#include <QItemSelectionModel>
+#include <algorithm>        // std::sort, std::clamp
 
 // ---- helper de tipo (texto -> etiqueta estable) ----
 static inline QString normType(const QString& t) {
@@ -57,7 +58,7 @@ RecordsPage::RecordsPage(QWidget* parent)
     connect(ui->btnLimpiarForm,       &QToolButton::clicked, this, &RecordsPage::onLimpiarFormulario);
     connect(ui->btnGenerarDummy,      &QToolButton::clicked, this, &RecordsPage::onGenerarDummyFila);
 
-    // ---- Paginación (etiqueta mock) ----
+    // ---- Paginación (etiqueta) ----
     connect(ui->btnPrimero,           &QToolButton::clicked, this, &RecordsPage::onPrimero);
     connect(ui->btnAnterior,          &QToolButton::clicked, this, &RecordsPage::onAnterior);
     connect(ui->btnSiguiente,         &QToolButton::clicked, this, &RecordsPage::onSiguiente);
@@ -72,7 +73,7 @@ RecordsPage::RecordsPage(QWidget* parent)
     ui->twRegistros->verticalHeader()->setVisible(false);
     ui->twRegistros->horizontalHeader()->setStretchLastSection(true);
 
-    // Demo por defecto si no hay tabla (hasta que Shell/Tablas seleccionen)
+    // Demo por defecto si no hay tabla (se mostrará hasta que Shell/Tablas seleccionen)
     ui->cbTabla->clear();
     ui->cbTabla->addItems(QStringList() << "Estudiantes" << "Cursos" << "Inscripciones");
     construirColumnasDemo();
@@ -80,7 +81,7 @@ RecordsPage::RecordsPage(QWidget* parent)
 
     setMode(Mode::Idle);
     updateStatusLabels();
-    emitNavState();
+    updateNavState();
 }
 
 RecordsPage::~RecordsPage()
@@ -120,14 +121,12 @@ void RecordsPage::setTableFromFieldDefs(const QString& name, const Schema& defs)
     // Suscribirse a cambios de filas del modelo
     m_rowsConn = connect(&DataModel::instance(), &DataModel::rowsChanged, this,
                          [this](const QString& t){
-                             if (t == m_tableName) {
-                                 reloadRows();
-                             }
+                             if (t == m_tableName) reloadRows();
                          });
 
     setMode(Mode::Idle);
     updateStatusLabels();
-    emitNavState();
+    updateNavState();
 }
 
 /* =================== Construcción de columnas desde el esquema =================== */
@@ -155,7 +154,7 @@ QString RecordsPage::formatCell(const FieldDef& fd, const QVariant& v) const
     const QString t = normType(fd.type);
     if (t == "fecha_hora") return v.toDate().toString("yyyy-MM-dd");
     if (t == "moneda")     return QString::number(v.toDouble(), 'f', 2);
-    // Numero / Auto / Texto
+    // Numero / Auto -> as string
     return v.toString();
 }
 
@@ -164,6 +163,13 @@ void RecordsPage::reloadRows()
     if (m_tableName.isEmpty() || m_schema.isEmpty()) return;
 
     const auto& vec = DataModel::instance().rows(m_tableName);
+
+    // Intentar preservar selección
+    int prevSel = -1;
+    if (auto *sm = ui->twRegistros->selectionModel()) {
+        const auto rows = sm->selectedRows();
+        if (!rows.isEmpty()) prevSel = rows.first().row();
+    }
 
     QSignalBlocker block(ui->twRegistros);
     ui->twRegistros->setRowCount(0);
@@ -179,14 +185,13 @@ void RecordsPage::reloadRows()
         }
     }
 
-    updateStatusLabels();
-
-    // Selección inicial (primera fila visible si no hay nada seleccionado)
-    if (ui->twRegistros->selectionModel()->selectedRows().isEmpty()) {
-        int fv = firstVisibleRow();
-        if (fv >= 0) ensureRowSelected(fv);
+    // Restaurar selección (o seleccionar la primera si nada)
+    if (ui->twRegistros->rowCount() > 0) {
+        int sel = std::clamp(prevSel, 0, ui->twRegistros->rowCount() - 1);
+        ui->twRegistros->selectRow(sel);
     }
-    emitNavState();
+    updateStatusLabels();
+    updateNavState();
 }
 
 /* =================== Helpers de estado/UI =================== */
@@ -194,6 +199,7 @@ void RecordsPage::reloadRows()
 void RecordsPage::setMode(Mode m)
 {
     m_mode = m;
+    // Guardar/Cancelar quedan deshabilitados en este flujo
     updateHeaderButtons();
 }
 
@@ -210,7 +216,10 @@ void RecordsPage::updateHeaderButtons()
 void RecordsPage::updateStatusLabels()
 {
     int total = ui->twRegistros->rowCount();
-    int visibles = visibleCount();
+    int visibles = 0;
+    for (int r = 0; r < total; ++r)
+        if (!ui->twRegistros->isRowHidden(r)) ++visibles;
+
     ui->lblTotal->setText(QStringLiteral("Mostrando %1 de %2").arg(visibles).arg(total));
     ui->lblPagina->setText(QStringLiteral("%1 / %2").arg(m_currentPage).arg(1)); // mock
 }
@@ -259,7 +268,7 @@ void RecordsPage::onTablaChanged(int /*index*/)
         ui->leBuscar->clear();
         setMode(Mode::Idle);
         updateStatusLabels();
-        emitNavState();
+        updateNavState();
     }
 }
 
@@ -267,13 +276,7 @@ void RecordsPage::onBuscarChanged(const QString& text)
 {
     aplicarFiltroBusqueda(text);
     updateStatusLabels();
-    // situar selección en primera visible tras filtrar si no hay selección válida
-    int cur = currentSelectedRow();
-    if (cur < 0 || ui->twRegistros->isRowHidden(cur)) {
-        int fv = firstVisibleRow();
-        if (fv >= 0) ensureRowSelected(fv);
-    }
-    emitNavState();
+    updateNavState();
 }
 
 void RecordsPage::onLimpiarBusqueda()
@@ -304,6 +307,7 @@ bool RecordsPage::editRecordDialog(const QString& title, const Schema& s, Record
         QWidget* w = nullptr;
 
         if (t == "autonumeracion") {
+            // Solo lectura (lo asigna el modelo si está vacío)
             auto *le = new QLineEdit;
             le->setReadOnly(true);
             le->setPlaceholderText("[auto]");
@@ -404,10 +408,10 @@ void RecordsPage::onInsertar()
 
     emit recordInserted(m_tableName);
     reloadRows();
-    // Seleccionar última visible
-    int lv = lastVisibleRow();
-    if (lv >= 0) ensureRowSelected(lv);
-    emitNavState();
+    // Seleccionar última fila
+    if (ui->twRegistros->rowCount() > 0)
+        ui->twRegistros->selectRow(ui->twRegistros->rowCount() - 1);
+    updateNavState();
 }
 
 void RecordsPage::onEditar()
@@ -433,8 +437,8 @@ void RecordsPage::onEditar()
 
     emit recordUpdated(m_tableName, row);
     reloadRows();
-    if (row < ui->twRegistros->rowCount()) ensureRowSelected(row);
-    emitNavState();
+    if (row < ui->twRegistros->rowCount()) ui->twRegistros->selectRow(row);
+    updateNavState();
 }
 
 void RecordsPage::onEliminar()
@@ -460,7 +464,7 @@ void RecordsPage::onEliminar()
 
     emit recordDeleted(m_tableName, rows);
     reloadRows();
-    emitNavState();
+    updateNavState();
 }
 
 void RecordsPage::onGuardar()  { /* no-op en este flujo */ }
@@ -479,7 +483,7 @@ void RecordsPage::onSelectionChanged()
         ui->lblFormTitle->setText(QStringLiteral("Editor — (sin selección)"));
     }
     updateHeaderButtons();
-    emitNavState();
+    updateNavState();
 }
 
 void RecordsPage::onItemDoubleClicked()
@@ -570,103 +574,94 @@ void RecordsPage::aplicarFiltroBusqueda(const QString& term)
         const bool show = filaCoincideBusqueda(r, term);
         ui->twRegistros->setRowHidden(r, !show);
     }
+    updateNavState();
 }
 
-/* ----------------- Navegación real (visibles) ----------------- */
+/* ----------------- Navegación visible ----------------- */
 
-int RecordsPage::visibleCount() const {
-    int n = 0;
-    for (int r = 0; r < ui->twRegistros->rowCount(); ++r)
-        if (!ui->twRegistros->isRowHidden(r)) ++n;
-    return n;
+QList<int> RecordsPage::visibleRows() const
+{
+    QList<int> v;
+    const int n = ui->twRegistros->rowCount();
+    v.reserve(n);
+    for (int r = 0; r < n; ++r)
+        if (!ui->twRegistros->isRowHidden(r)) v.push_back(r);
+    return v;
 }
 
-int RecordsPage::firstVisibleRow() const {
-    for (int r = 0; r < ui->twRegistros->rowCount(); ++r)
-        if (!ui->twRegistros->isRowHidden(r)) return r;
-    return -1;
+int RecordsPage::selectedVisibleIndex() const
+{
+    const auto vis = visibleRows();
+    const auto sel = ui->twRegistros->selectionModel()
+                         ? ui->twRegistros->selectionModel()->selectedRows()
+                         : QModelIndexList{};
+    if (sel.isEmpty()) return -1;
+    const int row = sel.first().row();
+    for (int i = 0; i < vis.size(); ++i)
+        if (vis[i] == row) return i;
+    return -1; // seleccionado está oculto o no hay
 }
 
-int RecordsPage::lastVisibleRow() const {
-    for (int r = ui->twRegistros->rowCount()-1; r >= 0; --r)
-        if (!ui->twRegistros->isRowHidden(r)) return r;
-    return -1;
-}
-
-int RecordsPage::nextVisibleRowFrom(int row) const {
-    for (int r = row + 1; r < ui->twRegistros->rowCount(); ++r)
-        if (!ui->twRegistros->isRowHidden(r)) return r;
-    return -1;
-}
-
-int RecordsPage::prevVisibleRowFrom(int row) const {
-    for (int r = row - 1; r >= 0; --r)
-        if (!ui->twRegistros->isRowHidden(r)) return r;
-    return -1;
-}
-
-int RecordsPage::currentSelectedRow() const {
-    const auto sel = ui->twRegistros->selectionModel()->selectedRows();
-    return sel.isEmpty() ? -1 : sel.first().row();
-}
-
-int RecordsPage::visibleIndexOfRow(int row) const {
-    if (row < 0 || row >= ui->twRegistros->rowCount()) return 0;
-    if (ui->twRegistros->isRowHidden(row)) return 0;
-    int idx = 0;
-    for (int r = 0; r <= row; ++r)
-        if (!ui->twRegistros->isRowHidden(r)) ++idx;
-    return idx; // 1..N
-}
-
-void RecordsPage::ensureRowSelected(int row) {
-    if (row < 0 || row >= ui->twRegistros->rowCount()) return;
+void RecordsPage::selectVisibleByIndex(int visIndex)
+{
+    const auto vis = visibleRows();
+    if (vis.isEmpty()) return;
+    // Qt6: QList::size() devuelve qsizetype → cast a int para std::clamp
+    const int ix = std::clamp(visIndex, 0, int(vis.size()) - 1);
+    const int row = vis[ix];
     ui->twRegistros->clearSelection();
     ui->twRegistros->selectRow(row);
-    ui->twRegistros->scrollToItem(ui->twRegistros->item(row, 0), QAbstractItemView::PositionAtCenter);
+    ui->twRegistros->scrollToItem(ui->twRegistros->item(row, 0),
+                                  QAbstractItemView::PositionAtCenter);
+    updateNavState();
 }
 
-void RecordsPage::emitNavState() {
-    const int tot = visibleCount();
-    const int curRow = currentSelectedRow();
-    const int curIdx = visibleIndexOfRow(curRow); // 1..tot, 0 si no hay selección válida
-    const bool canPrev = (tot > 0) && (curIdx > 1);
-    const bool canNext = (tot > 0) && (curIdx >= 1) && (curIdx < tot);
-    emit navState(curIdx, tot, canPrev, canNext);
+void RecordsPage::updateNavState()
+{
+    const auto vis = visibleRows();
+    const int tot = vis.size();
+    int cur = 0;
+
+    const int selVis = selectedVisibleIndex();
+    if (selVis >= 0) cur = selVis + 1;        // 1-based
+    else if (tot > 0) cur = 1;                // si no hay selección, mostramos 1/… por UX
+
+    const bool canPrev = (tot > 0) && (cur > 1);
+    const bool canNext = (tot > 0) && (cur < tot);
+
+    emit navState(cur, tot, canPrev, canNext);
 }
 
-void RecordsPage::navFirst() {
-    int r = firstVisibleRow();
-    if (r >= 0) ensureRowSelected(r);
-    emitNavState();
+/* --- Slots de navegación expuestos al Shell --- */
+
+void RecordsPage::navFirst()
+{
+    const auto vis = visibleRows();
+    if (vis.isEmpty()) { updateNavState(); return; }
+    selectVisibleByIndex(0);
 }
 
-void RecordsPage::navPrev() {
-    int cur = currentSelectedRow();
-    if (cur < 0 || ui->twRegistros->isRowHidden(cur)) {
-        int r = firstVisibleRow();
-        if (r >= 0) ensureRowSelected(r);
-    } else {
-        int p = prevVisibleRowFrom(cur);
-        if (p >= 0) ensureRowSelected(p);
-    }
-    emitNavState();
+void RecordsPage::navPrev()
+{
+    const auto vis = visibleRows();
+    if (vis.isEmpty()) { updateNavState(); return; }
+    int ix = selectedVisibleIndex();
+    if (ix < 0) ix = 0;
+    selectVisibleByIndex(ix - 1);
 }
 
-void RecordsPage::navNext() {
-    int cur = currentSelectedRow();
-    if (cur < 0 || ui->twRegistros->isRowHidden(cur)) {
-        int r = firstVisibleRow();
-        if (r >= 0) ensureRowSelected(r);
-    } else {
-        int n = nextVisibleRowFrom(cur);
-        if (n >= 0) ensureRowSelected(n);
-    }
-    emitNavState();
+void RecordsPage::navNext()
+{
+    const auto vis = visibleRows();
+    if (vis.isEmpty()) { updateNavState(); return; }
+    int ix = selectedVisibleIndex();
+    if (ix < 0) ix = 0;
+    selectVisibleByIndex(ix + 1);
 }
 
-void RecordsPage::navLast() {
-    int r = lastVisibleRow();
-    if (r >= 0) ensureRowSelected(r);
-    emitNavState();
+void RecordsPage::navLast()
+{
+    const auto vis = visibleRows();
+    if (vis.isEmpty()) { updateNavState(); return; }
+    selectVisibleByIndex(int(vis.size()) - 1);
 }

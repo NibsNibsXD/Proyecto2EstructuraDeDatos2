@@ -22,15 +22,15 @@ signals:
     void recordUpdated(const QString& tabla, int row);
     void recordDeleted(const QString& tabla, const QList<int>& rows);
 
-    // NUEVO: estado de navegación (posición visible/total y habilitar prev/next)
-    void navState(int current, int total, bool canPrev, bool canNext);
+    // Estado de navegación (posición 1-based y habilitado prev/next)
+    void navState(int cur, int tot, bool canPrev, bool canNext);
 
 public slots:
     // === Integración con TablesPage/Shell ===
     // Recibe el nombre de la tabla y su esquema (lista de campos) y reconstruye la grilla
     void setTableFromFieldDefs(const QString& name, const Schema& defs);
 
-    // === Navegación real (sobre filas visibles) ===
+    // --- Navegación (para la barra inferior del shell) ---
     void navFirst();
     void navPrev();
     void navNext();
@@ -99,18 +99,14 @@ private:
 
     // ---- Diálogo dinámico por esquema ----
     // Devuelve true si el usuario acepta. r es in/out.
-    bool editRecordDialog(const QString& title, const Schema& s, Record& r, bool isInsert, QString* errMsg = nullptr);
+    bool editRecordDialog(const QString& title, const Schema& s, Record& r,
+                          bool isInsert, QString* errMsg = nullptr);
 
-    // ---- Navegación (helpers sobre filas visibles) ----
-    int  visibleCount() const;
-    int  firstVisibleRow() const;
-    int  lastVisibleRow() const;
-    int  nextVisibleRowFrom(int row) const;
-    int  prevVisibleRowFrom(int row) const;
-    int  currentSelectedRow() const;            // índice absoluto (todas las filas), -1 si no hay
-    int  visibleIndexOfRow(int row) const;      // 1..N entre visibles; 0 si row oculto/invalid
-    void ensureRowSelected(int row);            // selecciona + hace scroll si es válido
-    void emitNavState();                        // emite navState(...) según selección actual
+    // ---- Navegación visible ----
+    void updateNavState();                        // emite navState(...)
+    QList<int> visibleRows() const;               // índices de filas no ocultas
+    int selectedVisibleIndex() const;             // posición (0-based) dentro de visibles o -1
+    void selectVisibleByIndex(int visIndex);      // selecciona por índice visible (clamped)
 };
 
 #endif // RECORDSPAGE_H
