@@ -2,7 +2,7 @@
 #define RECORDSPAGE_H
 
 #include <QWidget>
-#include "datamodel.h"   // <- FieldDef / Schema
+#include "datamodel.h"   // Schema / FieldDef / Record
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class RecordsPage; }
@@ -62,23 +62,33 @@ private:
     QString m_tableName;   // tabla actualmente mostrada
     Schema  m_schema;      // esquema actual
 
-    // ---- Helpers de UI (sin estilos) ----
+    // ---- Helpers de UI ----
     void setMode(Mode m);
     void updateHeaderButtons();
     void updateStatusLabels();
-    void construirColumnasDemo();       // columnas de muestra (sandbox)
-    void cargarDatosDemo();             // filas de muestra (sandbox)
-    void limpiarFormulario();
-    void cargarFormularioDesdeFila(int row);
-    void escribirFormularioEnFila(int row);
-    int  agregarFilaDesdeFormulario();
 
     // Reconstruye columnas/filas usando el esquema recibido
     void applyDefs(const Schema& defs);
+    void reloadRowsFromModel();              // vuelve a llenar la QTableWidget desde DataModel
 
-    // Utilidades
+    // Formulario genérico basado en heurísticas por nombre de campo
+    Record buildRecordFromForm() const;      // construye Record alineado al Schema
+    void   setFormFromRecord(const Record&); // vuelca Record al formulario
+
+    // Utilidades varias
+    int  selectedRow() const;
     bool filaCoincideBusqueda(int row, const QString& term) const;
     void aplicarFiltroBusqueda(const QString& term);
+
+    // --- (Solo para sandbox legacy; ya no se usan, pero las dejamos por compatibilidad) ---
+    void construirColumnasDemo();
+    void cargarDatosDemo();
+
+    // Limpiar/llenar form legacy
+    void limpiarFormulario();
+    void cargarFormularioDesdeFila(int row);     // ahora usa DataModel
+    void escribirFormularioEnFila(int row);      // ya no se usa (operamos con DataModel)
+    int  agregarFilaDesdeFormulario();           // ya no se usa (operamos con DataModel)
 };
 
 #endif // RECORDSPAGE_H

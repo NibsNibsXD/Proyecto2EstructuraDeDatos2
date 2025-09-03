@@ -11,7 +11,8 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QMap>
-#include "datamodel.h"   // <--- NUEVO
+
+#include "datamodel.h"   // FieldDef / Schema / DataModel
 
 class TablesPage : public QWidget {
     Q_OBJECT
@@ -19,20 +20,22 @@ public:
     explicit TablesPage(QWidget *parent = nullptr, bool withSidebar = true);
     QListWidget* tableListWidget() const { return tablesList; }
 
-    // Exponer el esquema actual de una tabla (para RecordsPage)
-    Schema schemaFor(const QString& table) const { return dbMock.value(table); }
+    // Compatibilidad con ShellWindow: toma el esquema desde el DataModel
+    Schema schemaFor(const QString& table) const { return DataModel::instance().schema(table); }
 
 signals:
-    void tableSelected(const QString& tableName);                 // <--- NUEVO
-    void schemaChanged(const QString& tableName, const Schema&);  // <--- NUEVO
+    void tableSelected(const QString& tableName);
+    void schemaChanged(const QString& tableName, const Schema&);
 
 private slots:
+    // acciones de tabla/campos
     void onAddField();
     void onRemoveField();
     void onNuevaTabla();
     void onEditarTabla();
     void onEliminarTabla();
 
+    // sincronización UI <-> modelo
     void onSelectTable();
     void onFieldSelectionChanged();
     void onPropertyChanged();
@@ -44,7 +47,7 @@ private:
 
     // Barra superior
     QLineEdit    *tableNameEdit = nullptr;
-    QLineEdit    *tableDescEdit = nullptr;
+    QLineEdit    *tableDescEdit = nullptr;     // descripción de tabla
     QPushButton  *btnNueva = nullptr;
     QPushButton  *btnEditar = nullptr;
     QPushButton  *btnEliminar = nullptr;
@@ -67,15 +70,16 @@ private:
     QCheckBox    *propRequerido = nullptr;
     QComboBox    *propIndexado = nullptr;
 
-    // Datos en memoria: nombreTabla -> lista de campos
-    QMap<QString, Schema> dbMock;     // <--- CAMBIO
+    // Estado actual (tabla seleccionada y su esquema)
+    QString m_currentTable;
+    Schema  m_currentSchema;
 
-    // Descripciones por tabla
+    // Descripciones por tabla (solo UI de maqueta)
     QMap<QString, QString> tableDesc_;
 
     // helpers UI
     void setupUi();
-    void setupFakeData();
+    void setupFakeData();             // ahora siembra el DataModel
     void applyQss();
     void loadTableToUi(const QString &tableName);
     void loadFieldPropsToUi(const FieldDef &fd);
@@ -86,8 +90,11 @@ private:
 
     void clearPropsUi();
 
-    // helpers de validación/consulta
-    bool tableExists(const QString& name) const;
+    // NUEVOS helpers usados por el .cpp
+    void updateTablesList(const QString& preferSelect = QString());
+    bool applySchemaAndRefresh(const Schema& s, int preserveRow = -1);
+
+    // validación
     bool isValidTableName(const QString& name) const;
 
     bool withSidebar_ = true;

@@ -1,4 +1,5 @@
 #include "tablespage.h"
+#include "datamodel.h"     // <--- necesario para usar DataModel
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -21,11 +22,29 @@ static QStringList kTypes() {
 TablesPage::TablesPage(QWidget *parent, bool withSidebar)
     : QWidget(parent), withSidebar_(withSidebar) {
     setupUi();
-    setupFakeData();
+    setupFakeData();     // ahora crea datos en DataModel
     applyQss();
 
-    tablesList->setCurrentRow(0);
-    onSelectTable();
+    // Poblar lista desde DataModel
+    updateTablesList();
+
+    // Reaccionar a cambios globales en el modelo
+    auto& dm = DataModel::instance();
+    connect(&dm, &DataModel::tableCreated,  this, [=](const QString& n){ updateTablesList(n); });
+    connect(&dm, &DataModel::tableDropped,  this, [=](const QString&){ updateTablesList(); });
+    connect(&dm, &DataModel::schemaChanged, this, [=](const QString& n, const Schema& s){
+        if (n == m_currentTable) {
+            m_currentSchema = s;
+            loadTableToUi(n);
+        }
+        // compatibilidad con ShellWindow
+        emit schemaChanged(n, s);
+    });
+
+    if (tablesList->count() > 0) {
+        tablesList->setCurrentRow(0);
+        onSelectTable();
+    }
 }
 
 /* ====================== UI ====================== */
@@ -56,7 +75,7 @@ void TablesPage::setupUi() {
     tableNameEdit = new QLineEdit;
     tableNameEdit->setPlaceholderText("Nombre de la tabla (p. ej. Matricula)");
 
-    // NUEVO: descripción
+    // descripción
     tableDescEdit = new QLineEdit;
     tableDescEdit->setPlaceholderText("Descripción de la tabla (opcional)");
 
@@ -137,7 +156,7 @@ void TablesPage::setupUi() {
     center->addLayout(fieldBtns);
     center->addWidget(propTabs);
 
-    root->addLayout(center, 1);   // <-- ahora solo agregamos el central aquí
+    root->addLayout(center, 1);
 
     // Conexiones
     connect(tablesList,        &QListWidget::currentRowChanged, this, &TablesPage::onSelectTable);
@@ -161,13 +180,12 @@ void TablesPage::setupUi() {
     connect(propRequerido, &QCheckBox::toggled,            this, &TablesPage::onPropertyChanged);
     connect(propIndexado,  &QComboBox::currentTextChanged, this, &TablesPage::onPropertyChanged);
 
-    // NUEVO: guardar descripción en memoria al editar
+    // guardar descripción en memoria al editar
     connect(tableDescEdit, &QLineEdit::textEdited, this, [=](const QString &txt){
         const auto t = currentTableName();
         if (!t.isEmpty()) tableDesc_[t] = txt;
     });
 }
-
 
 void TablesPage::applyQss() {
     setStyleSheet(R"(
@@ -210,9 +228,6 @@ void TablesPage::applyQss() {
     QTableView::item:selected { background:#d9e1f2; color:#000; }
     QTableView::item:hover { background:#f5f7fb; }
 
-    /* Marco rojo cuando la celda tiene foco (sin selección) */
-    QTableView::item:active:!selected { outline: 2px solid #c0504d; outline-offset:-1px; }
-
     /* Editor del combo dentro de celda */
     QComboBox QAbstractItemView {
         background:#ffffff; border:1px solid #bfbfbf; selection-background-color:#d9e1f2;
@@ -230,17 +245,22 @@ void TablesPage::applyQss() {
 
 /* ================ Datos de ejemplo ================= */
 void TablesPage::setupFakeData() {
-    dbMock["Alumno"] = {
+    auto& dm = DataModel::instance();
+
+    // Si ya hay tablas (p.ej. por recarga), no dupliques
+    if (!dm.tables().isEmpty()) return;
+
+    Schema alumno = {
         {"IdAlumno", "Autonumeración", 4, true,  "", "", "", "", "", "", true,  "Sí (sin duplicados)"},
         {"Nombre",   "Texto corto",    50,false, "", "", "", "", "", "", true,  "Sí (con duplicados)"},
         {"Correo",   "Texto corto",    80,false, "", "", "", "", "", "", false, "Sí (con duplicados)"}
     };
-    dbMock["Clase"] = {
+    Schema clase = {
         {"IdClase", "Autonumeración", 4, true, "", "", "", "", "", "", true, "Sí (sin duplicados)"},
         {"Nombre",  "Texto corto",    60,false,"", "", "", "", "", "", true, "Sí (con duplicados)"},
         {"Horario", "Texto corto",    20,false,"", "", "", "", "", "", false,"No"}
     };
-    dbMock["Matricula"] = {
+    Schema matricula = {
         {"IdMatricula",    "Autonumeración", 4, true,  "", "", "", "", "", "", true,  "Sí (sin duplicados)"},
         {"IdAlumno",       "Número",         4, false, "", "", "", "", "", "", true,  "Sí (con duplicados)"},
         {"FechaMatricula", "Fecha/Hora",     8, false, "DD/MM/YY", "", "", "", "", "", true, "No"},
@@ -248,16 +268,32 @@ void TablesPage::setupFakeData() {
         {"Observacion",    "Texto corto",    255,false, "", "", "", "", "", "", false,"No"}
     };
 
-    // Descripciones iniciales (opcionales)
+    QString err;
+    dm.createTable("Alumno", alumno, &err);
+    dm.createTable("Clase", clase, &err);
+    dm.createTable("Matricula", matricula, &err);
+
     tableDesc_["Alumno"]    = "Catálogo de alumnos de la universidad.";
-    tableDesc_["Clase"]     = "Catálogo de clases/assignaturas.";
+    tableDesc_["Clase"]     = "Catálogo de clases/asignaturas.";
     tableDesc_["Matricula"] = "Relación de inscripciones por período.";
+}
 
-    auto icon = qApp->style()->standardIcon(QStyle::SP_FileDialogDetailedView);
+void TablesPage::updateTablesList(const QString& preferSelect) {
+    const QString cur = currentTableName();
+    const QStringList names = DataModel::instance().tables();
+    const QIcon icon = qApp->style()->standardIcon(QStyle::SP_FileDialogDetailedView);
 
-    tablesList->addItem(new QListWidgetItem(icon, "Alumno"));
-    tablesList->addItem(new QListWidgetItem(icon, "Clase"));
-    tablesList->addItem(new QListWidgetItem(icon, "Matricula"));
+    QSignalBlocker b(tablesList);
+    tablesList->clear();
+    for (const auto& n : names) {
+        auto *it = new QListWidgetItem(icon, n);
+        tablesList->addItem(it);
+    }
+
+    QString target = preferSelect.isEmpty() ? cur : preferSelect;
+    int idx = names.indexOf(target);
+    if (idx < 0 && !names.isEmpty()) idx = 0;
+    if (idx >= 0) tablesList->setCurrentRow(idx);
 }
 
 QString TablesPage::currentTableName() const {
@@ -267,18 +303,18 @@ QString TablesPage::currentTableName() const {
 
 /* ============== Carga y sincronización ============== */
 void TablesPage::loadTableToUi(const QString &tableName) {
-    const QSignalBlocker blockNames(fieldsTable); // evita reentradas de itemChanged
+    const QSignalBlocker blockNames(fieldsTable); // evita reentradas
     fieldsTable->setRowCount(0);
-    tableNameEdit->setText(tableName);
 
-    // cargar descripción asociada
+    m_currentTable  = tableName;
+    m_currentSchema = DataModel::instance().schema(tableName);
+
+    tableNameEdit->setText(tableName);
     tableDescEdit->setText(tableDesc_.value(tableName));
 
-    const auto &fields = dbMock[tableName];
-
-    for (int i = 0; i < fields.size(); ++i) {
+    for (int i = 0; i < m_currentSchema.size(); ++i) {
         fieldsTable->insertRow(i);
-        buildRowFromField(i, fields[i]);
+        buildRowFromField(i, m_currentSchema[i]);
         connectRowEditors(i);
     }
 
@@ -307,7 +343,7 @@ void TablesPage::buildRowFromField(int row, const FieldDef &fd) {
     sizeSp->setValue(fd.size);
     fieldsTable->setCellWidget(row, 2, sizeSp);
 
-    // PK (checkbox dentro de un wrapper para centrar)
+    // PK (checkbox centrado)
     auto *pkChk = new QCheckBox(fieldsTable);
     pkChk->setChecked(fd.pk);
     pkChk->setStyleSheet("margin-left:12px;");
@@ -319,74 +355,86 @@ void TablesPage::buildRowFromField(int row, const FieldDef &fd) {
     fieldsTable->setCellWidget(row, 3, wrap);
 }
 
-void TablesPage::connectRowEditors(int row) {
-    auto table = currentTableName();
-    if (table.isEmpty()) return;
+bool TablesPage::applySchemaAndRefresh(const Schema& s, int preserveRow) {
+    if (m_currentTable.isEmpty()) return false;
 
+    QString err;
+    if (!DataModel::instance().setSchema(m_currentTable, s, &err)) {
+        QMessageBox::warning(this, tr("Esquema inválido"), err);
+        return false;
+    }
+    // se normalizó en el modelo; recarga UI
+    int row = preserveRow >= 0 ? preserveRow : fieldsTable->currentRow();
+    m_currentSchema = DataModel::instance().schema(m_currentTable);
+    loadTableToUi(m_currentTable);
+    if (row >= 0 && row < fieldsTable->rowCount())
+        fieldsTable->selectRow(row);
+
+    // compatibilidad con ShellWindow
+    emit schemaChanged(m_currentTable, m_currentSchema);
+    return true;
+}
+
+void TablesPage::connectRowEditors(int row) {
     // Tipo
     auto *typeCb = qobject_cast<QComboBox*>(fieldsTable->cellWidget(row,1));
     QObject::connect(typeCb, &QComboBox::currentTextChanged, this, [=](const QString &t){
-        auto &list = dbMock[table];
-        if (row < 0 || row >= list.size()) return;
-        list[row].type = t;
+        if (row < 0 || row >= m_currentSchema.size()) return;
+        Schema s = m_currentSchema;
+        s[row].type = t;
 
         // Sugerir tamaño si está en cero
         auto *sizeSp = qobject_cast<QSpinBox*>(fieldsTable->cellWidget(row,2));
-        if (list[row].size == 0) {
-            if (t == "Texto corto") sizeSp->setValue(50), list[row].size = 50;
-            if (t == "Número")      sizeSp->setValue(4),  list[row].size = 4;
-            if (t == "Moneda")      sizeSp->setValue(8),  list[row].size = 8;
-            if (t == "Fecha/Hora")  sizeSp->setValue(8),  list[row].size = 8;
+        if (s[row].size == 0) {
+            if (t == "Texto corto") { sizeSp->setValue(50); s[row].size = 50; }
+            if (t == "Número")      { sizeSp->setValue(4);  s[row].size = 4; }
+            if (t == "Moneda")      { sizeSp->setValue(8);  s[row].size = 8; }
+            if (t == "Fecha/Hora")  { sizeSp->setValue(8);  s[row].size = 8; }
         }
 
-        emit schemaChanged(table, dbMock[table]); // NUEVO
+        applySchemaAndRefresh(s, row);
     });
 
     // Tamaño
     auto *sizeSp = qobject_cast<QSpinBox*>(fieldsTable->cellWidget(row,2));
     QObject::connect(sizeSp, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int v){
-        auto &list = dbMock[table];
-        if (row < 0 || row >= list.size()) return;
-        list[row].size = v;
-        emit schemaChanged(table, dbMock[table]); // NUEVO
+        if (row < 0 || row >= m_currentSchema.size()) return;
+        Schema s = m_currentSchema;
+        s[row].size = v;
+        applySchemaAndRefresh(s, row);
     });
 
     // PK
     auto *wrap = fieldsTable->cellWidget(row,3);
     auto *pkChk = wrap->findChild<QCheckBox*>();
     QObject::connect(pkChk, &QCheckBox::toggled, this, [=](bool on){
-        auto &list = dbMock[table];
-        if (row < 0 || row >= list.size()) return;
-        list[row].pk = on;
-        emit schemaChanged(table, dbMock[table]); // NUEVO
+        if (row < 0 || row >= m_currentSchema.size()) return;
+        Schema s = m_currentSchema;
+        s[row].pk = on;
+        applySchemaAndRefresh(s, row); // fallará si hay >1 PK y revertirá en recarga
     });
 }
 
 void TablesPage::onNameItemEdited(QTableWidgetItem *it) {
     if (!it || it->column() != 0) return;
-    auto table = currentTableName();
-    if (table.isEmpty()) return;
-    auto &list = dbMock[table];
     int row = it->row();
-    if (row < 0 || row >= list.size()) return;
-    list[row].name = it->text();
-    emit schemaChanged(table, dbMock[table]); // NUEVO
+    if (row < 0 || row >= m_currentSchema.size()) return;
+    Schema s = m_currentSchema;
+    s[row].name = it->text();
+    applySchemaAndRefresh(s, row);
 }
 
 void TablesPage::onSelectTable() {
     const auto name = currentTableName();
     if (name.isEmpty()) return;
     loadTableToUi(name);
-    emit tableSelected(name);               // NUEVO
+    emit tableSelected(name);
 }
 
 void TablesPage::onFieldSelectionChanged() {
-    auto table = currentTableName();
-    if (table.isEmpty()) { clearPropsUi(); return; }
-    auto &list = dbMock[table];
     int row = fieldsTable->currentRow();
-    if (row < 0 || row >= list.size()) { clearPropsUi(); return; }
-    loadFieldPropsToUi(list[row]);
+    if (row < 0 || row >= m_currentSchema.size()) { clearPropsUi(); return; }
+    loadFieldPropsToUi(m_currentSchema[row]);
 }
 
 void TablesPage::loadFieldPropsToUi(const FieldDef &fd) {
@@ -415,13 +463,11 @@ void TablesPage::pullPropsFromUi(FieldDef &fd) {
 }
 
 void TablesPage::onPropertyChanged() {
-    auto table = currentTableName();
-    if (table.isEmpty()) return;
-    auto &list = dbMock[table];
     int row = fieldsTable->currentRow();
-    if (row < 0 || row >= list.size()) return;
-    pullPropsFromUi(list[row]);
-    emit schemaChanged(table, dbMock[table]); // NUEVO
+    if (row < 0 || row >= m_currentSchema.size()) return;
+    Schema s = m_currentSchema;
+    pullPropsFromUi(s[row]);
+    applySchemaAndRefresh(s, row);
 }
 
 void TablesPage::clearPropsUi() {
@@ -440,46 +486,32 @@ void TablesPage::clearPropsUi() {
 
 /* =================== CRUD de campos =================== */
 void TablesPage::onAddField() {
-    auto table = currentTableName();
-    if (table.isEmpty()) return;
-    auto &list = dbMock[table];
+    if (m_currentTable.isEmpty()) return;
+    Schema s = m_currentSchema;
 
     FieldDef fd;
     fd.name = "NuevoCampo";
     fd.type = "Texto corto";
     fd.size = 50;
-    list.append(fd);
+    s.append(fd);
 
-    int r = fieldsTable->rowCount();
-    fieldsTable->insertRow(r);
-    buildRowFromField(r, fd);
-    connectRowEditors(r);
-    fieldsTable->selectRow(r);
-
-    emit schemaChanged(table, dbMock[table]); // NUEVO
+    applySchemaAndRefresh(s, s.size()-1);
 }
 
 void TablesPage::onRemoveField() {
-    auto table = currentTableName();
-    if (table.isEmpty()) return;
-    auto &list = dbMock[table];
+    if (m_currentTable.isEmpty()) return;
     int row = fieldsTable->currentRow();
-    if (row < 0 || row >= list.size()) return;
+    if (row < 0 || row >= m_currentSchema.size()) return;
 
-    list.removeAt(row);
-    fieldsTable->removeRow(row);
-    if (fieldsTable->rowCount() > 0)
-        fieldsTable->selectRow(std::min(row, fieldsTable->rowCount()-1));
-    else
-        clearPropsUi();
+    Schema s = m_currentSchema;
+    s.removeAt(row);
 
-    emit schemaChanged(table, dbMock[table]); // NUEVO
+    // IMPORTANTE: castear size() a int y manejar lista vacía
+    const int newSel = s.isEmpty() ? -1 : std::min(row, int(s.size()) - 1);
+    applySchemaAndRefresh(s, newSel);
 }
 
 /* =================== CRUD de tablas =================== */
-bool TablesPage::tableExists(const QString& name) const {
-    return dbMock.contains(name);
-}
 
 bool TablesPage::isValidTableName(const QString& name) const {
     static const QRegularExpression rx("^[A-Za-z_][A-Za-z0-9_]*$");
@@ -511,7 +543,7 @@ void TablesPage::onNuevaTabla() {
                              "El nombre debe iniciar con letra o _ y puede contener letras, números y _. ");
         return;
     }
-    if (tableExists(name)) {
+    if (DataModel::instance().tables().contains(name)) {
         QMessageBox::information(this, "Duplicado",
                                  "Ya existe una tabla llamada \"" + name + "\".");
         return;
@@ -526,24 +558,23 @@ void TablesPage::onNuevaTabla() {
     pk.requerido = true;
     pk.indexado  = "Sí (sin duplicados)";
 
-    dbMock.insert(name, Schema{ pk });
+    QString err;
+    if (!DataModel::instance().createTable(name, Schema{ pk }, &err)) {
+        QMessageBox::warning(this, "Nueva tabla", err);
+        return;
+    }
 
     // Descripción asociada inicia vacía (se actualizará al teclear)
     tableDesc_[name] = QString();
 
-    // UI: agregar a la lista y seleccionar
-    auto icon = qApp->style()->standardIcon(QStyle::SP_FileDialogDetailedView);
-    tablesList->addItem(new QListWidgetItem(icon, name));
-    tablesList->setCurrentRow(tablesList->count() - 1);
-
-    // Refrescar diseñador
+    updateTablesList(name);
     loadTableToUi(name);
     tableNameEdit->setText(name);
-    tableDescEdit->clear(); // listo para escribir descripción
+    tableDescEdit->clear();
     if (fieldsTable->rowCount() > 0) fieldsTable->selectRow(0);
 
-    emit tableSelected(name);           // NUEVO
-    emit schemaChanged(name, dbMock[name]); // NUEVO
+    emit tableSelected(name);
+    emit schemaChanged(name, DataModel::instance().schema(name));
 
     QMessageBox::information(this, "Nueva tabla",
                              "Se creó la tabla \"" + name + "\" (en memoria).");
@@ -563,23 +594,26 @@ void TablesPage::onEditarTabla() {
         QMessageBox::warning(this,"Renombrar","Usa letras/números/_ y no inicies con número.");
         return;
     }
-    if (dbMock.contains(newName) && newName != oldName) {
+    if (DataModel::instance().tables().contains(newName) && newName != oldName) {
         QMessageBox::warning(this,"Renombrar","Ya existe una tabla con ese nombre.");
         return;
     }
 
-    // mover campos
-    auto list = dbMock.take(oldName);
-    dbMock[newName] = list;
+    QString err;
+    if (!DataModel::instance().renameTable(oldName, newName, &err)) {
+        QMessageBox::warning(this,"Renombrar", err);
+        return;
+    }
 
-    // mover descripción
+    // mover descripción local
     QString desc = tableDesc_.take(oldName);
     tableDesc_[newName] = desc;
 
-    item->setText(newName);
+    updateTablesList(newName);
+    loadTableToUi(newName);
 
-    emit tableSelected(newName);               // NUEVO
-    emit schemaChanged(newName, dbMock[newName]); // NUEVO
+    emit tableSelected(newName);
+    emit schemaChanged(newName, DataModel::instance().schema(newName));
 }
 
 void TablesPage::onEliminarTabla() {
@@ -589,14 +623,18 @@ void TablesPage::onEliminarTabla() {
     if (QMessageBox::question(this,"Eliminar",
                               "¿Eliminar la tabla \"" + name + "\"?") != QMessageBox::Yes) return;
 
-    dbMock.remove(name);
+    QString err;
+    if (!DataModel::instance().dropTable(name, &err)) {
+        QMessageBox::warning(this,"Eliminar", err);
+        return;
+    }
     tableDesc_.remove(name);
 
-    delete tablesList->takeItem(tablesList->currentRow());
+    updateTablesList();
     fieldsTable->setRowCount(0);
     tableNameEdit->clear();
     tableDescEdit->clear();
     clearPropsUi();
 
-    emit schemaChanged(name, {}); // NUEVO: esquema vacío tras eliminar
+    emit schemaChanged(name, {}); // esquema vacío tras eliminar
 }
