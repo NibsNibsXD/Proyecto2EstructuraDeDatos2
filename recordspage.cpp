@@ -618,50 +618,79 @@ void RecordsPage::selectVisibleByIndex(int visIndex)
 
 void RecordsPage::updateNavState()
 {
-    const auto vis = visibleRows();
-    const int tot = vis.size();
-    int cur = 0;
+    // Obtener filas visibles y la selección actual
+    const QList<int> visibles = visibleRows();
+    int totalVisibles = visibles.size();
 
-    const int selVis = selectedVisibleIndex();
-    if (selVis >= 0) cur = selVis + 1;        // 1-based
-    else if (tot > 0) cur = 1;                // si no hay selección, mostramos 1/… por UX
+    // Índice seleccionado dentro de visibles (0-based)
+    int curIndex = selectedVisibleIndex();
 
-    const bool canPrev = (tot > 0) && (cur > 1);
-    const bool canNext = (tot > 0) && (cur < tot);
+    // Convertir a 1-based (0 si no hay selección)
+    int cur = (curIndex >= 0 ? curIndex + 1 : 0);
 
-    emit navState(cur, tot, canPrev, canNext);
+    // Calcular si se puede navegar
+    bool canPrev = (cur > 1);
+    bool canNext = (cur > 0 && cur < totalVisibles);
+
+    // Emitir la señal hacia ShellWindow
+    emit navState(cur, totalVisibles, canPrev, canNext);
 }
 
-/* --- Slots de navegación expuestos al Shell --- */
+
+/* =================== Navegación desde ShellWindow =================== */
 
 void RecordsPage::navFirst()
 {
-    const auto vis = visibleRows();
-    if (vis.isEmpty()) { updateNavState(); return; }
-    selectVisibleByIndex(0);
+    const QList<int> vis = visibleRows();
+    if (!vis.isEmpty())
+        selectVisibleByIndex(0);
 }
 
 void RecordsPage::navPrev()
 {
-    const auto vis = visibleRows();
-    if (vis.isEmpty()) { updateNavState(); return; }
-    int ix = selectedVisibleIndex();
-    if (ix < 0) ix = 0;
-    selectVisibleByIndex(ix - 1);
+    int cur = selectedVisibleIndex();
+    if (cur > 0)
+        selectVisibleByIndex(cur - 1);
 }
 
 void RecordsPage::navNext()
 {
-    const auto vis = visibleRows();
-    if (vis.isEmpty()) { updateNavState(); return; }
-    int ix = selectedVisibleIndex();
-    if (ix < 0) ix = 0;
-    selectVisibleByIndex(ix + 1);
+    int cur = selectedVisibleIndex();
+    const QList<int> vis = visibleRows();
+    if (cur >= 0 && cur < vis.size() - 1)
+        selectVisibleByIndex(cur + 1);
 }
 
 void RecordsPage::navLast()
 {
-    const auto vis = visibleRows();
-    if (vis.isEmpty()) { updateNavState(); return; }
-    selectVisibleByIndex(int(vis.size()) - 1);
+    const QList<int> vis = visibleRows();
+    if (!vis.isEmpty())
+        selectVisibleByIndex(vis.size() - 1);
 }
+
+
+
+/* =================== Ordenación desde Ribbon =================== */
+
+void RecordsPage::sortAscending()
+{
+    int col = ui->twRegistros->currentColumn();
+    if (col < 0) col = 0; // por defecto, primera columna
+    ui->twRegistros->sortByColumn(col, Qt::AscendingOrder);
+}
+
+void RecordsPage::sortDescending()
+{
+    int col = ui->twRegistros->currentColumn();
+    if (col < 0) col = 0;
+    ui->twRegistros->sortByColumn(col, Qt::DescendingOrder);
+}
+
+void RecordsPage::clearSorting()
+{
+    ui->twRegistros->horizontalHeader()->setSortIndicator(-1, Qt::AscendingOrder);
+    ui->twRegistros->setSortingEnabled(false);
+    ui->twRegistros->setSortingEnabled(true); // reset para volver al orden original
+}
+
+
