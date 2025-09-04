@@ -242,7 +242,7 @@ QCheckBox { spacing:6px; }
              <bool>false</bool>
             </property>
             <property name="text">
-             <string>Guradar.</string>
+             <string>Guardar</string>
             </property>
             <property name="autoRaise">
              <bool>true</bool>
@@ -365,9 +365,9 @@ QCheckBox { spacing:6px; }
                <property name="geometry">
                 <rect>
                  <x>0</x>
-                 <y>-148</y>
-                 <width>301</width>
-                 <height>438</height>
+                 <y>0</y>
+                 <width>280</width>
+                 <height>451</height>
                 </rect>
                </property>
                <layout class="QHBoxLayout" name="horizontalLayout_4">
