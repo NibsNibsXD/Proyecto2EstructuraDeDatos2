@@ -113,6 +113,11 @@ private:
     QList<int> visibleRows() const;               // índices de filas no ocultas
     int selectedVisibleIndex() const;             // posición (0-based) dentro de visibles o -1
     void selectVisibleByIndex(int visIndex);      // selecciona por índice visible (clamped)
+
+    int m_lastSortColumn = -1;
+
+    int currentSortColumn() const;
+
 };
 
 #endif // RECORDSPAGE_H

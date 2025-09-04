@@ -672,25 +672,31 @@ void RecordsPage::navLast()
 
 /* =================== Ordenación desde Ribbon =================== */
 
-void RecordsPage::sortAscending()
-{
-    int col = ui->twRegistros->currentColumn();
-    if (col < 0) col = 0; // por defecto, primera columna
+int RecordsPage::currentSortColumn() const {
+    // preguntar directamente al header qué columna está activa
+    int col = ui->twRegistros->horizontalHeader()->sortIndicatorSection();
+    if (col >= 0)
+        return col;
+
+    // si nunca se ha ordenado, por defecto la primera
+    return 0;
+}
+
+
+void RecordsPage::sortAscending() {
+    int col = currentSortColumn();
     ui->twRegistros->sortByColumn(col, Qt::AscendingOrder);
 }
 
-void RecordsPage::sortDescending()
-{
-    int col = ui->twRegistros->currentColumn();
-    if (col < 0) col = 0;
+void RecordsPage::sortDescending() {
+    int col = currentSortColumn();
     ui->twRegistros->sortByColumn(col, Qt::DescendingOrder);
 }
 
-void RecordsPage::clearSorting()
-{
-    ui->twRegistros->horizontalHeader()->setSortIndicator(-1, Qt::AscendingOrder);
+void RecordsPage::clearSorting() {
     ui->twRegistros->setSortingEnabled(false);
-    ui->twRegistros->setSortingEnabled(true); // reset para volver al orden original
+    ui->twRegistros->setSortingEnabled(true);
+    ui->twRegistros->horizontalHeader()->setSortIndicator(-1, Qt::AscendingOrder);
+
+    reloadRows(); // vuelve a cargar en el orden natural de DataModel
 }
-
-
