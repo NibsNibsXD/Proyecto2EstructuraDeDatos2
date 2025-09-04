@@ -36,6 +36,12 @@ public slots:
     void navNext();
     void navLast();
 
+    // --- Ordenación desde Ribbon ---
+    void sortAscending();
+    void sortDescending();
+    void clearSorting();
+
+
 private slots:
     // Encabezado / acciones
     void onTablaChanged(int index);

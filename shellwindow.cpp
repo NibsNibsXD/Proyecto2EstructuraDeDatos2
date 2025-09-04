@@ -130,23 +130,32 @@ static QWidget* buildRecordNavigator(int width, int height, RecordsPage* records
     filterLbl->setObjectName("lblFilter");
     filterLbl->setStyleSheet("color:#888; background:transparent; border:none; min-width:70px;");
 
-    QObject::connect(filterBtn, &QToolButton::toggled, [filterBtn, filterLbl](bool on){
-        if (on) {
-            filterBtn->setIcon(qApp->style()->standardIcon(QStyle::SP_DialogYesButton));
-            filterLbl->setText("Filter On");
-            filterLbl->setStyleSheet("color:#006400; font-weight:bold; background:transparent; border:none; min-width:70px;");
-        } else {
-            filterBtn->setIcon(qApp->style()->standardIcon(QStyle::SP_DialogCancelButton));
-            filterLbl->setText("No Filter");
-            filterLbl->setStyleSheet("color:#888; background:transparent; border:none; min-width:70px;");
-        }
-    });
-
     auto *search = new QLineEdit;
     search->setObjectName("navSearch");
     search->setPlaceholderText("Search");
     search->setFixedWidth(240);
     search->setStyleSheet("background:white; border:1px solid #c8c8c8; padding:2px 6px;");
+
+    QObject::connect(filterBtn, &QToolButton::toggled,
+                     [filterBtn, filterLbl, search, recordsPage](bool on){
+                         if (on) {
+                             filterBtn->setIcon(qApp->style()->standardIcon(QStyle::SP_DialogYesButton));
+                             filterLbl->setText("Filter On");
+                             filterLbl->setStyleSheet("color:#006400; font-weight:bold; background:transparent; border:none; min-width:70px;");
+
+                             // Aplicar filtro con el texto actual de la caja
+                             QMetaObject::invokeMethod(recordsPage, "onBuscarChanged", Qt::DirectConnection,
+                                                       Q_ARG(QString, search->text()));
+                         } else {
+                             filterBtn->setIcon(qApp->style()->standardIcon(QStyle::SP_DialogCancelButton));
+                             filterLbl->setText("No Filter");
+                             filterLbl->setStyleSheet("color:#888; background:transparent; border:none; min-width:70px;");
+
+                             // Limpiar filtro al desactivar
+                             QMetaObject::invokeMethod(recordsPage, "onLimpiarBusqueda", Qt::DirectConnection);
+                         }
+                     });
+
 
     // Conexiones a RecordsPage (usamos invokeMethod para no requerir headers nuevos)
     QObject::connect(firstBtn, &QToolButton::clicked, recordsPage, [recordsPage]{
@@ -237,7 +246,7 @@ static QToolButton* makeActionBtn(const QString& text, const QString& iconPath =
         else if (text.contains("Filter", Qt::CaseInsensitive))
             icon = qApp->style()->standardIcon(QStyle::SP_DirIcon);
         else if (text.contains("Clear", Qt::CaseInsensitive))
-            icon = qApp->style()->standardIcon(QStyle::SP_BrowserStop);
+            icon = qApp->style()->standardIcon(QStyle::SP_DialogResetButton);
         else if (text.contains("Datasheet", Qt::CaseInsensitive))
             icon = qApp->style()->standardIcon(QStyle::SP_FileDialogDetailedView);
         else if (text.contains("Design", Qt::CaseInsensitive))
@@ -550,7 +559,7 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
             stack->setCurrentWidget(tablesPage);
         });
 
-    // ====== Ribbon: Records / Find (wire actions) ======
+    // ====== Ribbon: Records / Find / Sort (wire actions) ======
     if (auto *homeRibbon = ribbonStack->widget(0)) {
         const auto btns = homeRibbon->findChildren<QToolButton*>();
         for (auto *b : btns) {
@@ -567,10 +576,17 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
                 connect(b, &QToolButton::clicked, recordsPage, [recordsPage]{
                     QMetaObject::invokeMethod(recordsPage, "onLimpiarBusqueda", Qt::DirectConnection);
                 });
+            } else if (t.compare("Sort Asc", Qt::CaseInsensitive) == 0) {
+                connect(b, &QToolButton::clicked, recordsPage, &RecordsPage::sortAscending);
+            } else if (t.compare("Sort Desc", Qt::CaseInsensitive) == 0) {
+                connect(b, &QToolButton::clicked, recordsPage, &RecordsPage::sortDescending);
+            } else if (t.compare("Clear", Qt::CaseInsensitive) == 0) {
+                connect(b, &QToolButton::clicked, recordsPage, &RecordsPage::clearSorting);
             }
             // "Save" se deja como placeholder (no aplica en el flujo actual)
         }
     }
+
 }
 
 // Centrar ventana
