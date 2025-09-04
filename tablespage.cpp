@@ -183,8 +183,9 @@ void TablesPage::setupUi() {
     // guardar descripción en memoria al editar
     connect(tableDescEdit, &QLineEdit::textEdited, this, [=](const QString &txt){
         const auto t = currentTableName();
-        if (!t.isEmpty()) tableDesc_[t] = txt;
+        if (!t.isEmpty()) DataModel::instance().setTableDescription(t, txt);
     });
+
 }
 
 void TablesPage::applyQss() {
@@ -273,9 +274,10 @@ void TablesPage::setupFakeData() {
     dm.createTable("Clase", clase, &err);
     dm.createTable("Matricula", matricula, &err);
 
-    tableDesc_["Alumno"]    = "Catálogo de alumnos de la universidad.";
-    tableDesc_["Clase"]     = "Catálogo de clases/asignaturas.";
-    tableDesc_["Matricula"] = "Relación de inscripciones por período.";
+    DataModel::instance().setTableDescription("Alumno",    "Catálogo de alumnos de la universidad.");
+    DataModel::instance().setTableDescription("Clase",     "Catálogo de clases/asignaturas.");
+    DataModel::instance().setTableDescription("Matricula", "Relación de inscripciones por período.");
+
 }
 
 void TablesPage::updateTablesList(const QString& preferSelect) {
@@ -310,7 +312,7 @@ void TablesPage::loadTableToUi(const QString &tableName) {
     m_currentSchema = DataModel::instance().schema(tableName);
 
     tableNameEdit->setText(tableName);
-    tableDescEdit->setText(tableDesc_.value(tableName));
+    tableDescEdit->setText(DataModel::instance().tableDescription(tableName));
 
     for (int i = 0; i < m_currentSchema.size(); ++i) {
         fieldsTable->insertRow(i);
@@ -565,7 +567,6 @@ void TablesPage::onNuevaTabla() {
     }
 
     // Descripción asociada inicia vacía (se actualizará al teclear)
-    tableDesc_[name] = QString();
 
     updateTablesList(name);
     loadTableToUi(name);
@@ -606,8 +607,6 @@ void TablesPage::onEditarTabla() {
     }
 
     // mover descripción local
-    QString desc = tableDesc_.take(oldName);
-    tableDesc_[newName] = desc;
 
     updateTablesList(newName);
     loadTableToUi(newName);
@@ -628,7 +627,7 @@ void TablesPage::onEliminarTabla() {
         QMessageBox::warning(this,"Eliminar", err);
         return;
     }
-    tableDesc_.remove(name);
+
 
     updateTablesList();
     fieldsTable->setRowCount(0);

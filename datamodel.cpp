@@ -151,6 +151,16 @@ QStringList DataModel::tables() const {
 Schema DataModel::schema(const QString& name) const {
     return m_schemas.value(name);
 }
+QString DataModel::tableDescription(const QString& table) const {
+    return m_tableDescriptions.value(table);
+}
+
+void DataModel::setTableDescription(const QString& table, const QString& desc) {
+    if (table.isEmpty()) return;
+    if (!m_schemas.contains(table)) return;
+    m_tableDescriptions[table] = desc;
+    // opcional: emit schemaChanged(table, m_schemas.value(table));
+}
 
 bool DataModel::createTable(const QString& name, const Schema& s, QString* err) {
     if (!isValidTableName(name)) {
@@ -179,6 +189,7 @@ bool DataModel::createTable(const QString& name, const Schema& s, QString* err) 
 
     m_schemas.insert(name, s);
     m_data.insert(name, {});
+    m_tableDescriptions.insert(name, QString());   // <--- NUEVO
     emit tableCreated(name);
     emit schemaChanged(name, s);
     return true;
@@ -188,6 +199,7 @@ bool DataModel::dropTable(const QString& name, QString* err) {
     if (!m_schemas.contains(name)) { if (err) *err = tr("No existe la tabla: %1").arg(name); return false; }
     m_schemas.remove(name);
     m_data.remove(name);
+    m_tableDescriptions.remove(name);              // <--- NUEVO
     emit tableDropped(name);
     return true;
 }
@@ -199,6 +211,7 @@ bool DataModel::renameTable(const QString& oldName, const QString& newName, QStr
 
     m_schemas.insert(newName, m_schemas.take(oldName));
     m_data.insert(newName,   m_data.take(oldName));
+    m_tableDescriptions.insert(newName, m_tableDescriptions.take(oldName));  // <--- NUEVO
     emit tableDropped(oldName);
     emit tableCreated(newName);
     emit schemaChanged(newName, m_schemas.value(newName));

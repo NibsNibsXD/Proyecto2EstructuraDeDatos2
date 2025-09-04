@@ -74,8 +74,7 @@ private:
     QString m_currentTable;
     Schema  m_currentSchema;
 
-    // Descripciones por tabla (solo UI de maqueta)
-    QMap<QString, QString> tableDesc_;
+
 
     // helpers UI
     void setupUi();

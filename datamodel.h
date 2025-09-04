@@ -69,7 +69,8 @@ public:
     bool validate(const Schema& s, Record& r, QString* err = nullptr) const; // convierte tipos in-place
     int  pkColumn(const Schema& s) const;           // -1 si no hay
     QVariant nextAutoNumber(const QString& name) const; // siguiente autonum para esa tabla
-
+    QString tableDescription(const QString& table) const;
+    void    setTableDescription(const QString& table, const QString& desc);
 signals:
     void tableCreated(const QString& name);
     void tableDropped(const QString& name);
@@ -91,6 +92,8 @@ private:
 private:
     QMap<QString, Schema>          m_schemas; // tabla -> schema
     QMap<QString, QVector<Record>> m_data;    // tabla -> filas
+    QMap<QString, QString> m_tableDescriptions; // nombre -> descripción
+
 };
 
 #endif // DATAMODEL_H

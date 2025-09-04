@@ -20,6 +20,11 @@
 #include <QListWidget>
 #include <QAction>
 #include <QMetaObject>
+#include <QMessageBox>
+#include <QPainter>
+#include <QPaintEvent>
+#include <QPainterPath>
+
 
 // Tamaños base
 static constexpr int kWinW   = 1400;
@@ -298,6 +303,101 @@ static QWidget* makeRibbonGroup(const QString& title, const QList<QToolButton*>&
 }
 
 // ------------------------------------------------------
+// ======== Relaciones (mock) ========
+class RelationsMockWidget : public QWidget {
+
+public:
+    explicit RelationsMockWidget(QWidget* parent=nullptr) : QWidget(parent) {
+        setAutoFillBackground(true);
+        setPalette(QPalette(QColor("#f2f2f6"))); // gris clarito
+    }
+protected:
+    void paintEvent(QPaintEvent* e) override {
+        Q_UNUSED(e);
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+
+        // Cajas fijas
+        QRect boxA(90, 80, 220, 170);                 // Alumno (izq)
+        QRect boxB(width() - 320, 130, 220, 140);     // Matricula (der)
+
+        // sombra sutil
+        auto drawShadow = [&](const QRect& r){
+            QPainterPath path; path.addRoundedRect(r.adjusted(2,2,2,2), 6, 6);
+            QColor sh(0,0,0,30);
+            for (int i=0;i<6;++i){ sh.setAlpha(30 - i*5); p.fillPath(path.translated(i, i), sh); }
+        };
+        drawShadow(boxA);
+        drawShadow(boxB);
+
+        // tabla estilo Access
+        auto drawTable = [&](const QRect& r, const QString& title, const QStringList& fields, int pkIndex){
+            p.setPen(QPen(QColor("#d16a6d"), 1));
+            p.setBrush(Qt::white);
+            p.drawRoundedRect(r, 6, 6);
+
+            QRect hdr = r.adjusted(0,0,0,-(r.height()-28));
+            p.fillRect(hdr, QColor("#ffe3e4"));
+            p.setPen(QPen(QColor("#9f3639"), 1));
+            p.drawLine(hdr.bottomLeft(), hdr.bottomRight());
+
+            p.setPen(QColor("#9f3639"));
+            QFont f = p.font(); f.setBold(true); p.setFont(f);
+            p.drawText(hdr.adjusted(8,0,-8,0), Qt::AlignVCenter|Qt::AlignLeft, title);
+
+            QRect body = r.adjusted(10, hdr.height()+6, -10, -10);
+            p.setPen(QColor("#333"));
+            QFont nf = p.font(); nf.setBold(false); p.setFont(nf);
+
+            int y = body.top();
+            for (int i=0;i<fields.size();++i) {
+                const bool isPk = (i == pkIndex);
+                QString line = (isPk ? QString::fromUtf8("🔑 ") : "  ");
+                line += fields[i];
+                if (isPk) {
+                    QFont bf = p.font(); bf.setBold(true); p.setFont(bf);
+                    p.setPen(QColor("#9f3639"));
+                } else {
+                    p.setPen(QColor("#333"));
+                    QFont tf = p.font(); tf.setBold(false); p.setFont(tf);
+                }
+                p.drawText(QRect(body.left(), y, body.width(), 20), Qt::AlignLeft|Qt::AlignVCenter, line);
+                y += 22;
+            }
+        };
+
+        // datos mock
+        QStringList alumno    = { "IdAlumno", "NombreAlumno", "EdadAlumno", "AlturaAlumno" };
+        QStringList matricula = { "IdMatricula", "IdAlumno", "FechaMatricula" };
+
+        drawTable(boxA, "Alumno",    alumno,    0);
+        drawTable(boxB, "Matricula", matricula, 0);
+
+        // flecha relación Alumno.IdAlumno -> Matricula.IdAlumno
+        QPoint a = QPoint(boxA.right(), boxA.center().y()+6);
+        QPoint b = QPoint(boxB.left(),  boxB.center().y()-6);
+
+        p.setPen(QPen(QColor("#444"), 2));
+        QPainterPath path;
+        path.moveTo(a);
+        int midX = (a.x() + b.x())/2;
+        path.lineTo(midX, a.y());
+        path.lineTo(midX, b.y());
+        path.lineTo(b);
+        p.drawPath(path);
+
+        auto drawArrow = [&](const QPoint& tip, const QPoint& from){
+            const double ang = std::atan2(tip.y()-from.y(), tip.x()-from.x());
+            const double len = 10.0;
+            QPointF p1 = tip + QPointF(-len*std::cos(ang-0.35), -len*std::sin(ang-0.35));
+            QPointF p2 = tip + QPointF(-len*std::cos(ang+0.35), -len*std::sin(ang+0.35));
+            QPolygonF tri; tri << tip << p1 << p2;
+            p.setBrush(QColor("#444"));
+            p.drawPolygon(tri);
+        };
+        drawArrow(b, QPoint(midX, b.y()));
+    }
+};
 
 ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("MiniAccess — Shell");
@@ -448,8 +548,14 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
 
     stack->addWidget(tablesPage);            // index 0 (Design)
     stack->addWidget(recordsPage);           // index 1 (Datasheet)
-    stack->addWidget(makePage("Consultas"));
-    stack->addWidget(makePage("Relaciones"));
+    auto *queriesPage   = makePage("Consultas (mock)");
+    auto *relationsPage = new RelationsMockWidget;   // <--- aquí usamos el widget que dibuja
+
+    stack->addWidget(tablesPage);            // index 0
+    stack->addWidget(recordsPage);           // index 1
+    stack->addWidget(queriesPage);           // index 2
+    stack->addWidget(relationsPage);         // index 3
+
 
     auto *navigator = buildRecordNavigator(kRightW, kBottomReserveH, recordsPage);
     rightV->addWidget(stack);
@@ -541,6 +647,17 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
                 });
             }
             // "Save" se deja como placeholder (no aplica en el flujo actual)
+        }
+    }
+    // ====== Ribbon: Database Tools → navegar a Relaciones (mock) ======
+    if (auto *dbRibbon = ribbonStack->widget(2)) {
+        const auto btns = dbRibbon->findChildren<QToolButton*>();
+        for (auto *b : btns) {
+            if (b->text() == "Relationships") {
+                connect(b, &QToolButton::clicked, this, [=]{
+                    stack->setCurrentWidget(relationsPage);
+                });
+            }
         }
     }
 
@@ -641,6 +758,23 @@ QWidget* ShellWindow::buildCreateRibbon() {
     hl->addWidget(vSep());
     hl->addWidget(gQuery);
     hl->addStretch();
+    // --- Placeholders para los botones del Ribbon "Create"
+    const auto btnsCreate = wrap->findChildren<QToolButton*>();
+    for (auto *b : btnsCreate) {
+        const QString t = b->text();
+        if (t == "Table" || t == "Table Design") {
+            connect(b, &QToolButton::clicked, this, [this, t]{
+                QMessageBox::information(this, "Create",
+                                         QString("Placeholder: %1 (abriría diseñador de tablas).").arg(t));
+            });
+        } else if (t == "Query Wizard" || t == "Query Design") {
+            connect(b, &QToolButton::clicked, this, [this, t]{
+                QMessageBox::information(this, "Create – Queries",
+                                         QString("Placeholder: %1 (página Consultas – mock).").arg(t));
+            });
+        }
+    }
+
     return wrap;
 }
 
@@ -663,5 +797,31 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
     hl->addWidget(vSep());
     hl->addWidget(gCompact);
     hl->addStretch();
+    // --- Placeholders para los botones del Ribbon "Database Tools"
+    const auto btnsDb = wrap->findChildren<QToolButton*>();
+    for (auto *b : btnsDb) {
+        const QString t = b->text();
+        if (t == "Indexes") {
+            connect(b, &QToolButton::clicked, this, [this]{
+                QMessageBox::information(this, "Database Tools",
+                                         "Placeholder: UI de índices (mock).");
+            });
+        } else if (t == "Relationships") {
+            connect(b, &QToolButton::clicked, this, [this]{
+
+            });
+        } else if (t == "Avail List") {
+            connect(b, &QToolButton::clicked, this, [this]{
+                QMessageBox::information(this, "Database Tools",
+                                         "Placeholder: Lista de disponibilidad (mock).");
+            });
+        } else if (t == "Compact") {
+            connect(b, &QToolButton::clicked, this, [this]{
+                QMessageBox::information(this, "Database Tools",
+                                         "Placeholder: Compact (mock).");
+            });
+        }
+    }
+
     return wrap;
 }
