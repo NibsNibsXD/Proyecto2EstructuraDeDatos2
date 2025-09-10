@@ -1,7 +1,8 @@
 #include "tablespage.h"
-#include "datamodel.h"     // <--- necesario para usar DataModel
+#include "datamodel.h"
 
 #include <QVBoxLayout>
+#include <QScopeGuard>
 #include <QHBoxLayout>
 #include <QFormLayout>
 #include <QHeaderView>
@@ -10,19 +11,44 @@
 #include <QSignalBlocker>
 #include <QInputDialog>
 #include <QRegularExpression>
-#include <algorithm>
 #include <QApplication>
+#include <QStyle>
+#include <QTimer>
+#include <QSpinBox>
+#include <QKeyEvent>
+#include <QIntValidator>
+
+
 
 /* ===== Helpers ===== */
 static QStringList kTypes() {
-    return {"Autonumeración","Número","Fecha/Hora","Moneda","Texto corto"};
+    // Orden parecido a Access
+    return {"Autonumeración","Número","Fecha/Hora","Moneda","Sí/No","Texto corto","Texto largo"};
+}
+
+// Igual que en DataModel, pero local a esta vista
+QString TablesPage::normType(const QString& t) {
+    const QString s = t.trimmed().toLower();
+    if (s.startsWith(u"auto"))                                    return "autonumeracion";
+    if (s.startsWith(u"número") || s.startsWith(u"numero"))       return "numero";
+    if (s.startsWith(u"fecha"))                                   return "fecha_hora";
+    if (s.startsWith(u"moneda"))                                  return "moneda";
+    if (s.startsWith(u"sí/no") || s.startsWith(u"si/no"))         return "booleano";
+    if (s.startsWith(u"texto largo"))                             return "texto_largo";
+    return "texto"; // Texto corto
+}
+
+// Mostrar/ocultar filas en un QFormLayout (campo+etiqueta)
+static void setRowVisible(QFormLayout* fl, QWidget* field, bool vis) {
+    if (!fl || !field) return;
+    if (auto *lab = fl->labelForField(field)) lab->setVisible(vis);
+    field->setVisible(vis);
 }
 
 /* ===== Constructor ===== */
 TablesPage::TablesPage(QWidget *parent, bool withSidebar)
     : QWidget(parent), withSidebar_(withSidebar) {
     setupUi();
-    setupFakeData();     // ahora crea datos en DataModel
     applyQss();
 
     // Poblar lista desde DataModel
@@ -37,7 +63,6 @@ TablesPage::TablesPage(QWidget *parent, bool withSidebar)
             m_currentSchema = s;
             loadTableToUi(n);
         }
-        // compatibilidad con ShellWindow
         emit schemaChanged(n, s);
     });
 
@@ -75,7 +100,7 @@ void TablesPage::setupUi() {
     tableNameEdit = new QLineEdit;
     tableNameEdit->setPlaceholderText("Nombre de la tabla (p. ej. Matricula)");
 
-    // descripción
+    // descripción (opcional)
     tableDescEdit = new QLineEdit;
     tableDescEdit->setPlaceholderText("Descripción de la tabla (opcional)");
 
@@ -85,22 +110,16 @@ void TablesPage::setupUi() {
 
     topBar->addWidget(new QLabel("Diseñando:"));
     topBar->addWidget(tableNameEdit, 1);
-    topBar->addSpacing(8);
-    topBar->addWidget(new QLabel("Descripción:"));
-    topBar->addWidget(tableDescEdit, 1);
     topBar->addStretch();
-    topBar->addWidget(btnNueva);
     topBar->addWidget(btnEditar);
     topBar->addWidget(btnEliminar);
 
-    // Grid central
-    fieldsTable = new QTableWidget(0, 4);
-    fieldsTable->setHorizontalHeaderLabels(
-        {"Nombre del campo", "Tipo de datos", "Tamaño", "PK"});
+    // Grid central (3 columnas: Nombre | Tipo | PK)
+    fieldsTable = new QTableWidget(0, 3);
+    fieldsTable->setHorizontalHeaderLabels({"Nombre del campo", "Tipo de datos", "PK"});
     fieldsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    fieldsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    fieldsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     fieldsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    fieldsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     fieldsTable->setAlternatingRowColors(true);
     fieldsTable->verticalHeader()->setVisible(false);
     fieldsTable->horizontalHeader()->setHighlightSections(false);
@@ -122,24 +141,36 @@ void TablesPage::setupUi() {
     // General
     QWidget *general = new QWidget;
     QFormLayout *fl = new QFormLayout(general);
-    propFormato   = new QLineEdit;
-    propMascara   = new QLineEdit;
-    propTitulo    = new QLineEdit;
-    propValorPred = new QLineEdit;
-    propReglaVal  = new QLineEdit;
-    propTextoVal  = new QLineEdit;
-    propRequerido = new QCheckBox("Requerido");
-    propIndexado  = new QComboBox;
-    propIndexado->addItems({"No", "Sí (con duplicados)", "Sí (sin duplicados)"});
 
-    fl->addRow("Formato:", propFormato);
-    fl->addRow("Máscara de entrada:", propMascara);
-    fl->addRow("Título:", propTitulo);
+    // Controles visibles
+    propFormato = new QComboBox(general);
+    propFormato->setEditable(true);
+    propFormato->setInsertPolicy(QComboBox::NoInsert);
+    if (propFormato->lineEdit()) propFormato->lineEdit()->setPlaceholderText("Formato: 0, 0.00, #,##0.00, etc.");
+    propAutoFormato = new QComboBox(general);          // ← lo usamos como **Tamaño**
+    propValorPred   = new QLineEdit(general);
+    propRequerido   = new QCheckBox("Requerido", general);
+
+    propTextSize    = new QLineEdit(general);
+    propTextSize->setValidator(new QIntValidator(1, 255, propTextSize));
+    propTextSize->setText(QStringLiteral("255"));
+    propTextSize->setPlaceholderText(QStringLiteral("1..255"));
+    propTextSize->installEventFilter(this);
+
+
+    // (Opcionales que ya no se muestran)
+    propAutoNewValues = new QComboBox(general); propAutoNewValues->hide();
+    propTitulo        = new QLineEdit(general);  propTitulo->hide();
+    propIndexado      = new QComboBox(general);  propIndexado->hide();
+
+    // Filas (obs: “Tamaño:”)
+    fl->addRow("Formato:", propFormato);      // solo para Autonum y Número
+    fl->addRow("Tamaño:",  propAutoFormato);  // Autonum y Número
+    fl->addRow("Field size:", propTextSize);
     fl->addRow("Valor predeterminado:", propValorPred);
-    fl->addRow("Regla de validación:", propReglaVal);
-    fl->addRow("Texto de validación:", propTextoVal);
-    fl->addRow("Indexado:", propIndexado);
     fl->addRow("", propRequerido);
+
+    propTabs->addTab(general, "General");
 
     // Búsqueda (maqueta)
     QWidget *busqueda = new QWidget;
@@ -156,13 +187,27 @@ void TablesPage::setupUi() {
     center->addLayout(fieldBtns);
     center->addWidget(propTabs);
 
+
+    fl->setFieldGrowthPolicy(QFormLayout::FieldsStayAtSizeHint);
+    // Todos igual de largos (se calcula cuando la UI ya está montada)
+    makePropsUniformWidth();
+
     root->addLayout(center, 1);
+
+    // --- Mantener tamaño constante del panel "General"/propiedades ---
+    // Altura fija (ajusta el número a tu gusto: 260–320 suele verse bien)
+    const int kPropsFixedH = 280;
+    propTabs->setMinimumHeight(kPropsFixedH);
+    propTabs->setMaximumHeight(kPropsFixedH);
+    propTabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Da todo el espacio sobrante al grid de campos
+    center->setStretch(1, 1);  // fieldsTable
+    center->setStretch(3, 0);  // propTabs
 
     // Conexiones
     connect(tablesList,        &QListWidget::currentRowChanged, this, &TablesPage::onSelectTable);
     connect(btnAddField,       &QPushButton::clicked,           this, &TablesPage::onAddField);
     connect(btnRemoveField,    &QPushButton::clicked,           this, &TablesPage::onRemoveField);
-    connect(btnNueva,          &QPushButton::clicked,           this, &TablesPage::onNuevaTabla);
     connect(btnEditar,         &QPushButton::clicked,           this, &TablesPage::onEditarTabla);
     connect(btnEliminar,       &QPushButton::clicked,           this, &TablesPage::onEliminarTabla);
     connect(fieldsTable,       &QTableWidget::itemChanged,      this, &TablesPage::onNameItemEdited);
@@ -171,132 +216,88 @@ void TablesPage::setupUi() {
             this, &TablesPage::onFieldSelectionChanged);
 
     // Propiedades -> datos del campo
-    connect(propFormato,   &QLineEdit::textEdited,         this, &TablesPage::onPropertyChanged);
-    connect(propMascara,   &QLineEdit::textEdited,         this, &TablesPage::onPropertyChanged);
-    connect(propTitulo,    &QLineEdit::textEdited,         this, &TablesPage::onPropertyChanged);
-    connect(propValorPred, &QLineEdit::textEdited,         this, &TablesPage::onPropertyChanged);
-    connect(propReglaVal,  &QLineEdit::textEdited,         this, &TablesPage::onPropertyChanged);
-    connect(propTextoVal,  &QLineEdit::textEdited,         this, &TablesPage::onPropertyChanged);
+    connect(propFormato, &QComboBox::currentTextChanged, this, &TablesPage::onPropertyChanged);
+    connect(propAutoFormato,   &QComboBox::currentTextChanged, this, [=]{ updateAutoControlsSensitivity(); onPropertyChanged(); });
+    connect(propValorPred, &QLineEdit::editingFinished, this, &TablesPage::onPropertyChanged);
+    connect(propTextSize, &QLineEdit::editingFinished, this, &TablesPage::onPropertyChanged);
+
+
     connect(propRequerido, &QCheckBox::toggled,            this, &TablesPage::onPropertyChanged);
-    connect(propIndexado,  &QComboBox::currentTextChanged, this, &TablesPage::onPropertyChanged);
 
     // guardar descripción en memoria al editar
     connect(tableDescEdit, &QLineEdit::textEdited, this, [=](const QString &txt){
         const auto t = currentTableName();
         if (!t.isEmpty()) DataModel::instance().setTableDescription(t, txt);
     });
-
 }
 
 void TablesPage::applyQss() {
     setStyleSheet(R"(
-
-    /* ====== Base (modo Access claro) ====== */
     QWidget { background:#ffffff; color:#222; font:10pt "Segoe UI"; }
-
-    /* Panel izquierdo */
     #lblSideTitle { font-weight:600; color:#444; padding-left:6px; }
-    QListWidget {
-        background:#f7f7f7; border:1px solid #cfcfcf; border-radius:4px;
-    }
+    QListWidget { background:#f7f7f7; border:1px solid #cfcfcf; border-radius:4px; }
     QListWidget::item { padding:6px 10px; }
     QListWidget::item:hover    { background:#ececec; }
     QListWidget::item:selected { background:#d9e1f2; color:#000; }
-
-    /* Entradas y combos de la barra superior */
-    QLineEdit, QComboBox, QSpinBox {
+    QLineEdit, QComboBox {
         background:#ffffff; border:1px solid #bfbfbf; border-radius:3px; padding:4px 6px;
     }
-    QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border:2px solid #c0504d; } /* rojo foco */
-
+    QLineEdit:focus, QComboBox:focus { border:2px solid #c0504d; }
     QPushButton {
         background:#e6e6e6; border:1px solid #bfbfbf; border-radius:3px; padding:6px 12px;
     }
     QPushButton:hover { background:#f2f2f2; }
     QPushButton:pressed { background:#dddddd; }
-
-    /* ====== Tabla (grid de diseño) ====== */
     QTableWidget {
         background:#ffffff; border:1px solid #cfcfcf; border-radius:3px;
         gridline-color:#d0d0d0; alternate-background-color:#fafafa;
     }
     QHeaderView::section {
-        background:#fff2cc;  /* encabezado amarillo */
-        color:#000; padding:6px 8px; border:1px solid #d6d6d6; font-weight:600;
+        background:#fff2cc; color:#000; padding:6px 8px; border:1px solid #d6d6d6; font-weight:600;
     }
-
-    /* Selección de filas estilo Access (azul claro) */
     QTableView::item:selected { background:#d9e1f2; color:#000; }
     QTableView::item:hover { background:#f5f7fb; }
-
-    /* Editor del combo dentro de celda */
     QComboBox QAbstractItemView {
         background:#ffffff; border:1px solid #bfbfbf; selection-background-color:#d9e1f2;
     }
-
-    /* Tabs de propiedades */
     QTabWidget::pane { border:1px solid #cfcfcf; border-radius:3px; top:-1px; }
     QTabBar::tab { background:#f7f7f7; border:1px solid #cfcfcf; border-bottom:0;
                    padding:6px 10px; margin-right:2px; }
     QTabBar::tab:selected { background:#ffffff; }
-
     QLabel { color:#333; }
     )");
 }
 
 /* ================ Datos de ejemplo ================= */
-void TablesPage::setupFakeData() {
-    auto& dm = DataModel::instance();
 
-    // Si ya hay tablas (p.ej. por recarga), no dupliques
-    if (!dm.tables().isEmpty()) return;
 
-    Schema alumno = {
-        {"IdAlumno", "Autonumeración", 4, true,  "", "", "", "", "", "", true,  "Sí (sin duplicados)"},
-        {"Nombre",   "Texto corto",    50,false, "", "", "", "", "", "", true,  "Sí (con duplicados)"},
-        {"Correo",   "Texto corto",    80,false, "", "", "", "", "", "", false, "Sí (con duplicados)"}
-    };
-    Schema clase = {
-        {"IdClase", "Autonumeración", 4, true, "", "", "", "", "", "", true, "Sí (sin duplicados)"},
-        {"Nombre",  "Texto corto",    60,false,"", "", "", "", "", "", true, "Sí (con duplicados)"},
-        {"Horario", "Texto corto",    20,false,"", "", "", "", "", "", false,"No"}
-    };
-    Schema matricula = {
-        {"IdMatricula",    "Autonumeración", 4, true,  "", "", "", "", "", "", true,  "Sí (sin duplicados)"},
-        {"IdAlumno",       "Número",         4, false, "", "", "", "", "", "", true,  "Sí (con duplicados)"},
-        {"FechaMatricula", "Fecha/Hora",     8, false, "DD/MM/YY", "", "", "", "", "", true, "No"},
-        {"Saldo",          "Moneda",         8, false, "Lps", "", "", "0", "", "", false,"No"},
-        {"Observacion",    "Texto corto",    255,false, "", "", "", "", "", "", false,"No"}
-    };
 
-    QString err;
-    dm.createTable("Alumno", alumno, &err);
-    dm.createTable("Clase", clase, &err);
-    dm.createTable("Matricula", matricula, &err);
-
-    DataModel::instance().setTableDescription("Alumno",    "Catálogo de alumnos de la universidad.");
-    DataModel::instance().setTableDescription("Clase",     "Catálogo de clases/asignaturas.");
-    DataModel::instance().setTableDescription("Matricula", "Relación de inscripciones por período.");
-
-}
-
-void TablesPage::updateTablesList(const QString& preferSelect) {
-    const QString cur = currentTableName();
+void TablesPage::updateTablesList(const QString& preferSelect)
+{
+    const QString cur   = currentTableName();
     const QStringList names = DataModel::instance().tables();
     const QIcon icon = qApp->style()->standardIcon(QStyle::SP_FileDialogDetailedView);
 
-    QSignalBlocker b(tablesList);
-    tablesList->clear();
-    for (const auto& n : names) {
-        auto *it = new QListWidgetItem(icon, n);
-        tablesList->addItem(it);
-    }
+    // Bloquear solo mientras repoblamos
+    {
+        QSignalBlocker b(tablesList);
+        tablesList->clear();
+        for (const auto& n : names) {
+            tablesList->addItem(new QListWidgetItem(icon, n));
+        }
+    } // ← desde aquí vuelven a emitirse señales
 
     QString target = preferSelect.isEmpty() ? cur : preferSelect;
     int idx = names.indexOf(target);
     if (idx < 0 && !names.isEmpty()) idx = 0;
-    if (idx >= 0) tablesList->setCurrentRow(idx);
+
+    if (idx >= 0) {
+        const bool changed = (idx != tablesList->currentRow());
+        tablesList->setCurrentRow(idx);        // ahora SÍ emite currentRowChanged
+        if (!changed) onSelectTable();         // asegura refresco del encabezado
+    }
 }
+
 
 QString TablesPage::currentTableName() const {
     auto *it = tablesList->currentItem();
@@ -320,11 +321,8 @@ void TablesPage::loadTableToUi(const QString &tableName) {
         connectRowEditors(i);
     }
 
-    if (fieldsTable->rowCount() > 0) {
-        fieldsTable->selectRow(0);
-    } else {
-        clearPropsUi();
-    }
+    if (fieldsTable->rowCount() > 0) fieldsTable->selectRow(0);
+    else                              clearPropsUi();
 }
 
 void TablesPage::buildRowFromField(int row, const FieldDef &fd) {
@@ -339,12 +337,6 @@ void TablesPage::buildRowFromField(int row, const FieldDef &fd) {
     typeCb->setCurrentText(fd.type);
     fieldsTable->setCellWidget(row, 1, typeCb);
 
-    // Tamaño (spin)
-    auto *sizeSp = new QSpinBox(fieldsTable);
-    sizeSp->setRange(0, 255);
-    sizeSp->setValue(fd.size);
-    fieldsTable->setCellWidget(row, 2, sizeSp);
-
     // PK (checkbox centrado)
     auto *pkChk = new QCheckBox(fieldsTable);
     pkChk->setChecked(fd.pk);
@@ -354,10 +346,11 @@ void TablesPage::buildRowFromField(int row, const FieldDef &fd) {
     hl->setContentsMargins(0,0,0,0);
     hl->addWidget(pkChk);
     hl->addStretch();
-    fieldsTable->setCellWidget(row, 3, wrap);
+    fieldsTable->setCellWidget(row, 2, wrap);
 }
 
-bool TablesPage::applySchemaAndRefresh(const Schema& s, int preserveRow) {
+bool TablesPage::applySchemaAndRefresh(const Schema& s, int preserveRow)
+{
     if (m_currentTable.isEmpty()) return false;
 
     QString err;
@@ -365,17 +358,30 @@ bool TablesPage::applySchemaAndRefresh(const Schema& s, int preserveRow) {
         QMessageBox::warning(this, tr("Esquema inválido"), err);
         return false;
     }
-    // se normalizó en el modelo; recarga UI
-    int row = preserveRow >= 0 ? preserveRow : fieldsTable->currentRow();
-    m_currentSchema = DataModel::instance().schema(m_currentTable);
-    loadTableToUi(m_currentTable);
-    if (row >= 0 && row < fieldsTable->rowCount())
-        fieldsTable->selectRow(row);
 
-    // compatibilidad con ShellWindow
+    const int row = (preserveRow >= 0) ? preserveRow : fieldsTable->currentRow();
+
+    // Bloquea eventos de selección durante la recarga para evitar saltar a la fila 0
+    {
+        QSignalBlocker bSel(fieldsTable->selectionModel());
+        loadTableToUi(m_currentTable);               // reconstruye grilla sin selectionChanged
+        if (row >= 0 && row < fieldsTable->rowCount())
+            fieldsTable->selectRow(row);             // re-selecciona la fila del usuario
+    }
+
+    // Refresca el panel para la fila realmente seleccionada
+    m_currentSchema = DataModel::instance().schema(m_currentTable);
+    if (row >= 0 && row < m_currentSchema.size()) {
+        loadFieldPropsToUi(m_currentSchema[row]);
+        updateGeneralUiForType(m_currentSchema[row].type);
+    } else {
+        clearPropsUi();
+    }
+
     emit schemaChanged(m_currentTable, m_currentSchema);
     return true;
 }
+
 
 void TablesPage::connectRowEditors(int row) {
     // Tipo
@@ -384,36 +390,18 @@ void TablesPage::connectRowEditors(int row) {
         if (row < 0 || row >= m_currentSchema.size()) return;
         Schema s = m_currentSchema;
         s[row].type = t;
-
-        // Sugerir tamaño si está en cero
-        auto *sizeSp = qobject_cast<QSpinBox*>(fieldsTable->cellWidget(row,2));
-        if (s[row].size == 0) {
-            if (t == "Texto corto") { sizeSp->setValue(50); s[row].size = 50; }
-            if (t == "Número")      { sizeSp->setValue(4);  s[row].size = 4; }
-            if (t == "Moneda")      { sizeSp->setValue(8);  s[row].size = 8; }
-            if (t == "Fecha/Hora")  { sizeSp->setValue(8);  s[row].size = 8; }
-        }
-
+        updateGeneralUiForType(t);     // Actualiza panel General en caliente
         applySchemaAndRefresh(s, row);
     });
 
-    // Tamaño
-    auto *sizeSp = qobject_cast<QSpinBox*>(fieldsTable->cellWidget(row,2));
-    QObject::connect(sizeSp, QOverload<int>::of(&QSpinBox::valueChanged), this, [=](int v){
-        if (row < 0 || row >= m_currentSchema.size()) return;
-        Schema s = m_currentSchema;
-        s[row].size = v;
-        applySchemaAndRefresh(s, row);
-    });
-
-    // PK
-    auto *wrap = fieldsTable->cellWidget(row,3);
+    // PK (columna 2)
+    auto *wrap = fieldsTable->cellWidget(row,2);
     auto *pkChk = wrap->findChild<QCheckBox*>();
     QObject::connect(pkChk, &QCheckBox::toggled, this, [=](bool on){
         if (row < 0 || row >= m_currentSchema.size()) return;
         Schema s = m_currentSchema;
         s[row].pk = on;
-        applySchemaAndRefresh(s, row); // fallará si hay >1 PK y revertirá en recarga
+        applySchemaAndRefresh(s, row);
     });
 }
 
@@ -434,54 +422,108 @@ void TablesPage::onSelectTable() {
 }
 
 void TablesPage::onFieldSelectionChanged() {
+    if (m_updatingUi) return;
     int row = fieldsTable->currentRow();
     if (row < 0 || row >= m_currentSchema.size()) { clearPropsUi(); return; }
     loadFieldPropsToUi(m_currentSchema[row]);
+    updateGeneralUiForType(m_currentSchema[row].type);   // Ajusta visibilidad por tipo
 }
 
 void TablesPage::loadFieldPropsToUi(const FieldDef &fd) {
-    QSignalBlocker b1(propFormato), b2(propMascara), b3(propTitulo),
-        b4(propValorPred), b5(propReglaVal), b6(propTextoVal),
-        b7(propIndexado), b8(propRequerido);
-    propFormato->setText(fd.formato);
-    propMascara->setText(fd.mascaraEntrada);
+    QSignalBlocker b1(propFormato), b3(propTitulo),
+        b4(propValorPred), b7(propIndexado), b8(propRequerido);
+    propFormato->setCurrentText(fd.formato);
+    propAutoFormato->setCurrentText(fd.autoSubtipo);
+    propAutoFormato->setCurrentText(fd.autoSubtipo.isEmpty() ? "Long Integer" : fd.autoSubtipo);
+    propAutoNewValues->setCurrentText(fd.autoNewValues.isEmpty() ? "Increment" : fd.autoNewValues);
+
+    // Field size (solo aplica a Texto corto)
+    if (normType(fd.type) == "texto") {
+        // Texto corto: size en propTextSize (QLineEdit)
+        const int sz = (fd.size <= 0 || fd.size > 255) ? 255 : fd.size;
+        propTextSize->setText(QString::number(sz));    }
     propTitulo->setText(fd.titulo);
     propValorPred->setText(fd.valorPredeterminado);
-    propReglaVal->setText(fd.reglaValidacion);
-    propTextoVal->setText(fd.textoValidacion);
     propRequerido->setChecked(fd.requerido);
     propIndexado->setCurrentText(fd.indexado);
+
+    // Placeholders “a lo Access” según tipo
+    const QString t = normType(fd.type);
+    if (t == "autonumeracion") {
+        QString fmt = fd.formato.trimmed().isEmpty() ? QStringLiteral("General Number") : fd.formato;
+        propFormato->setCurrentText(fmt);
+        if (propFormato->findText(fmt) < 0) propFormato->addItem(fmt);
+
+    } else if (t == "texto") {
+        propFormato->setPlaceholderText("Presentación opcional (no obligatorio)");
+    } else if (t == "texto_largo") {
+        if (propFormato->lineEdit()) propFormato->lineEdit()->setPlaceholderText("Texto sin límite fijo");
+
+    } else if (t == "numero") {
+        if (propFormato->lineEdit()) propFormato->lineEdit()->setPlaceholderText("Formato/decimales: Auto, 0, 0.00, #,##0.00");
+
+    } else if (t == "moneda") {
+        propFormato->setPlaceholderText("Lps / $ / €  (p.ej. L #,##0.00)");
+
+    } else if (t == "fecha_hora") {
+        if (propFormato->lineEdit()) propFormato->lineEdit()->setPlaceholderText("dd/MM/yy, yyyy-MM-dd, etc.");
+
+    } else if (t == "booleano") {
+        propFormato->setPlaceholderText("Sí/No (o Verdadero/Falso)");
+
+    }
 }
 
 void TablesPage::pullPropsFromUi(FieldDef &fd) {
-    fd.formato            = propFormato->text();
-    fd.mascaraEntrada     = propMascara->text();
+    fd.formato            = propFormato->currentText();
+    // Solo tiene sentido en Autonumeración, pero guardar no hace daño
+    fd.autoSubtipo        = propAutoFormato->currentText();
+    fd.autoNewValues      = propAutoNewValues->currentText();
     fd.titulo             = propTitulo->text();
     fd.valorPredeterminado= propValorPred->text();
-    fd.reglaValidacion    = propReglaVal->text();
-    fd.textoValidacion    = propTextoVal->text();
     fd.requerido          = propRequerido->isChecked();
     fd.indexado           = propIndexado->currentText();
+
+    // Tamaño aplica solo a Texto corto
+    if (normType(fd.type) == "texto") {
+        bool ok = false;
+        int v = propTextSize->text().toInt(&ok);
+        if (!ok) v = 255;
+        fd.size = std::max(1, std::min(v, 255));
+        }
 }
 
+// #include <QTimer>
 void TablesPage::onPropertyChanged() {
-    int row = fieldsTable->currentRow();
+    if (m_updatingUi) return;
+    const int row = fieldsTable->currentRow();
     if (row < 0 || row >= m_currentSchema.size()) return;
+
+    // Recoge cambios actuales de la UI
     Schema s = m_currentSchema;
-    pullPropsFromUi(s[row]);
-    applySchemaAndRefresh(s, row);
+    pullPropsFromUi(s[row]);  // ya existe :contentReference[oaicite:6]{index=6}
+
+    // Recuerda dónde estaba el foco para restaurarlo luego
+    QWidget* hadFocus = QApplication::focusWidget();
+
+    // Encola la recarga para evitar destruir widgets durante la señal
+    QTimer::singleShot(0, this, [=]{
+        applySchemaAndRefresh(s, row);         // recarga todo :contentReference[oaicite:7]{index=7}
+        if (hadFocus == propValorPred && propValorPred) propValorPred->setFocus();
+        else if (hadFocus == propFormato && propFormato) {
+            if (auto *le = propFormato->lineEdit()) le->setFocus();
+            else propFormato->setFocus();
+        } else if (hadFocus == propTextSize && propTextSize) propTextSize->setFocus();
+    });
 }
+
 
 void TablesPage::clearPropsUi() {
-    QSignalBlocker b1(propFormato), b2(propMascara), b3(propTitulo),
-        b4(propValorPred), b5(propReglaVal), b6(propTextoVal),
-        b7(propIndexado), b8(propRequerido);
-    propFormato->clear();
-    propMascara->clear();
+    QSignalBlocker b1(propFormato), b3(propTitulo),
+        b4(propValorPred), b7(propIndexado), b8(propRequerido);
+    propFormato->setCurrentText("");
     propTitulo->clear();
     propValorPred->clear();
-    propReglaVal->clear();
-    propTextoVal->clear();
     propRequerido->setChecked(false);
     propIndexado->setCurrentIndex(0);
 }
@@ -494,7 +536,7 @@ void TablesPage::onAddField() {
     FieldDef fd;
     fd.name = "NuevoCampo";
     fd.type = "Texto corto";
-    fd.size = 50;
+    fd.size = 255; // el modelo lo usará si aplica; no se muestra en la UI
     s.append(fd);
 
     applySchemaAndRefresh(s, s.size()-1);
@@ -507,133 +549,218 @@ void TablesPage::onRemoveField() {
 
     Schema s = m_currentSchema;
     s.removeAt(row);
-
-    // IMPORTANTE: castear size() a int y manejar lista vacía
-    const int newSel = s.isEmpty() ? -1 : std::min(row, int(s.size()) - 1);
-    applySchemaAndRefresh(s, newSel);
+    applySchemaAndRefresh(s, qMin(row, s.size()-1));
 }
 
-/* =================== CRUD de tablas =================== */
+void TablesPage::onNuevaTabla() {
+    bool ok = false;
+    QString name = QInputDialog::getText(this, tr("Nueva tabla"),
+                                         tr("Nombre de la nueva tabla:"), QLineEdit::Normal,
+                                         "NuevaTabla", &ok);
+    if (!ok || name.trimmed().isEmpty()) return;
 
+    if (!isValidTableName(name)) {
+        QMessageBox::warning(this, tr("Nombre inválido"),
+                             tr("El nombre debe iniciar con letra o guion bajo y sólo contener letras, números o _."));
+        return;
+    }
+
+    Schema s;
+    QString err;
+    if (!DataModel::instance().createTable(name, s, &err)) {
+        QMessageBox::warning(this, tr("Crear tabla"), err);
+        return;
+    }
+    updateTablesList(name);
+}
+
+void TablesPage::onEditarTabla() {
+    const QString cur = currentTableName();
+    if (cur.isEmpty()) return;
+
+    bool ok = false;
+    QString newName = QInputDialog::getText(this, tr("Renombrar tabla"),
+                                            tr("Nuevo nombre:"), QLineEdit::Normal,
+                                            cur, &ok);
+    if (!ok || newName.trimmed().isEmpty() || newName == cur) return;
+
+    QString err;
+    if (!DataModel::instance().renameTable(cur, newName, &err)) {
+        QMessageBox::warning(this, tr("Renombrar"), err);
+        return;
+    }
+    updateTablesList(newName);
+}
+
+void TablesPage::onEliminarTabla() {
+    const QString cur = currentTableName();
+    if (cur.isEmpty()) return;
+    if (QMessageBox::question(this, tr("Eliminar"),
+                              tr("¿Eliminar la tabla \"%1\"?").arg(cur)) != QMessageBox::Yes)
+        return;
+
+    QString err;
+    if (!DataModel::instance().dropTable(cur, &err)) {
+        QMessageBox::warning(this, tr("Eliminar"), err);
+        return;
+    }
+    updateTablesList();
+}
+
+/* =================== validación =================== */
 bool TablesPage::isValidTableName(const QString& name) const {
     static const QRegularExpression rx("^[A-Za-z_][A-Za-z0-9_]*$");
     return rx.match(name).hasMatch();
 }
 
-void TablesPage::onNuevaTabla() {
 
-    tableNameEdit->clear();
-    tableDescEdit->clear();
-    fieldsTable->setRowCount(0);
-    clearPropsUi();
+void TablesPage::updateGeneralUiForType(const QString& type)
+{
+    m_updatingUi = true;
+    const auto guard = qScopeGuard([this]{ m_updatingUi = false; });
+    QSignalBlocker bAF(propAutoFormato);
+    QSignalBlocker bANV(propAutoNewValues);
+    auto *general = propTabs->widget(0);
+    auto *fl = qobject_cast<QFormLayout*>(general->layout());
+    if (!fl) return;
 
-    QString name = tableNameEdit->text().trimmed();
+    const QString t = normType(type);
 
-    // Si no hay nombre, pedirlo
-    if (name.isEmpty()) {
-        bool ok = false;
-        name = QInputDialog::getText(
-                   this, "Nueva tabla",
-                   "Nombre de la tabla:",
-                   QLineEdit::Normal, "", &ok).trimmed();
-        if (!ok) return; // canceló
-    }
+    // ¿El campo seleccionado es PK? (para ocultar “Requerido” en PK)
+    bool isPk = false;
+    int row = fieldsTable ? fieldsTable->currentRow() : -1;
+    if (row >= 0 && row < m_currentSchema.size()) isPk = m_currentSchema[row].pk;
 
-    // Validaciones
-    if (!isValidTableName(name)) {
-        QMessageBox::warning(this, "Nombre inválido",
-                             "El nombre debe iniciar con letra o _ y puede contener letras, números y _. ");
+    // Oculta todo por defecto
+    setRowVisible(fl, propFormato,     false);
+    setRowVisible(fl, propAutoFormato, false);
+    setRowVisible(fl, propValorPred,   false);
+    setRowVisible(fl, propRequerido,   false);
+    setRowVisible(fl, propTextSize,    false);
+
+    // Resetea combos
+    if (propFormato)       { propFormato->clear(); propFormato->clearEditText(); }
+    if (propAutoFormato)   { propAutoFormato->clear(); propAutoFormato->setEnabled(true); }
+    if (propAutoNewValues) propAutoNewValues->hide(); // no se usa visualmente
+
+    // Mostrar según tipo
+    if (t == "autonumeracion") {
+        // Tamaño = Long Integer fijo
+        propAutoFormato->addItem("Long Integer");
+        propAutoFormato->setCurrentIndex(0);
+        propAutoFormato->setEnabled(false);
+
+        // Formato (presentación) + Tamaño
+        setRowVisible(fl, propFormato,     true);
+        setRowVisible(fl, propAutoFormato, true);
+        propFormato->setEditable(false);
+        propFormato->clear();
+        propFormato->addItems({"General Number","Currency","Euro","Fixed",
+                               "Standard","Percent","Scientific"});
+        {
+            QString fmt;
+            int r = fieldsTable ? fieldsTable->currentRow() : -1;
+            if (r >= 0 && r < m_currentSchema.size()) fmt = m_currentSchema[r].formato.trimmed();
+            if (fmt.isEmpty()) fmt = QStringLiteral("General Number");
+            if (propFormato->findText(fmt) < 0) propFormato->addItem(fmt);
+            propFormato->setCurrentText(fmt);
+        }
+        if (!isPk) setRowVisible(fl, propRequerido, false); // PK siempre no requerido
         return;
     }
-    if (DataModel::instance().tables().contains(name)) {
-        QMessageBox::information(this, "Duplicado",
-                                 "Ya existe una tabla llamada \"" + name + "\".");
+
+    if (t == "numero") {
+        propFormato->setEditable(true);
+        // Tamaño seleccionable
+        propAutoFormato->addItems({"Byte","Integer","Long Integer","Single","Double","Decimal"});
+        propAutoFormato->setCurrentText("Long Integer");
+
+        setRowVisible(fl, propFormato,     true);  // presentación
+        setRowVisible(fl, propAutoFormato, true);  // tamaño
+        propFormato->addItems({"General Number","Currency","Euro","Fixed",
+                               "Standard","Percent","Scientific"});
+        if (!isPk) setRowVisible(fl, propRequerido, true);
         return;
     }
 
-    // Crear tabla en memoria con un campo PK por defecto
-    FieldDef pk;
-    pk.name = "Id" + name;             // IdMatricula, IdAlumno, etc.
-    pk.type = "Autonumeración";
-    pk.size = 4;
-    pk.pk   = true;
-    pk.requerido = true;
-    pk.indexado  = "Sí (sin duplicados)";
+    if (t == "texto") {
+        propFormato->setEditable(true);
+        // Solo aplica tamaño de texto (Field size) + valor predeterminado
+        setRowVisible(fl, propTextSize,    true);
+        setRowVisible(fl, propValorPred,   true);
+        if (!isPk) setRowVisible(fl, propRequerido, true);
 
-    QString err;
-    if (!DataModel::instance().createTable(name, Schema{ pk }, &err)) {
-        QMessageBox::warning(this, "Nueva tabla", err);
+        // Ajusta el label
+        if (auto *lbl = qobject_cast<QLabel*>(fl->labelForField(propTextSize)))
+            lbl->setText("Field size:");
+
+        // PONER EL NÚMERO EN EL QLINEEDIT (¡ya no setValue!)
+        int idx = fieldsTable ? fieldsTable->currentRow() : -1;
+        if (idx >= 0 && idx < m_currentSchema.size()) {
+            int sz = m_currentSchema[idx].size > 0 ? m_currentSchema[idx].size : 255;
+            if (sz < 1)   sz = 1;
+            if (sz > 255) sz = 255;
+            propTextSize->setText(QString::number(sz));
+        } else {
+            propTextSize->setText(QStringLiteral("255"));
+        }
         return;
     }
 
-    // Descripción asociada inicia vacía (se actualizará al teclear)
+    if (t == "fecha_hora") {
+        propFormato->setEditable(true);
+        setRowVisible(fl, propFormato,     true);
+        propFormato->addItems({"General Date","Long Date","Medium Date","Short Date",
+                               "Long Time","Medium Time","Short Time"});
+        if (!isPk) setRowVisible(fl, propRequerido, true);
+        return;
+    }
 
-    updateTablesList(name);
-    loadTableToUi(name);
-    tableNameEdit->setText(name);
-    tableDescEdit->clear();
-    if (fieldsTable->rowCount() > 0) fieldsTable->selectRow(0);
-
-    emit tableSelected(name);
-    emit schemaChanged(name, DataModel::instance().schema(name));
-
-    QMessageBox::information(this, "Nueva tabla",
-                             "Se creó la tabla \"" + name + "\" (en memoria).");
+    if (t == "moneda" || t == "booleano" || t == "texto_largo") {
+        propFormato->setEditable(true);
+        setRowVisible(fl, propValorPred,   true);
+        if (!isPk) setRowVisible(fl, propRequerido, true);
+        return;
+    }
 }
 
-void TablesPage::onEditarTabla() {
-    auto *item = tablesList->currentItem();
-    if (!item) return;
-    const QString oldName = item->text();
-
-    QString newName = tableNameEdit->text().trimmed();
-    if (newName.isEmpty()) {
-        QMessageBox::warning(this,"Renombrar","Escribe un nombre válido.");
-        return;
-    }
-    if (!isValidTableName(newName)) {
-        QMessageBox::warning(this,"Renombrar","Usa letras/números/_ y no inicies con número.");
-        return;
-    }
-    if (DataModel::instance().tables().contains(newName) && newName != oldName) {
-        QMessageBox::warning(this,"Renombrar","Ya existe una tabla con ese nombre.");
-        return;
-    }
-
-    QString err;
-    if (!DataModel::instance().renameTable(oldName, newName, &err)) {
-        QMessageBox::warning(this,"Renombrar", err);
-        return;
-    }
-
-    // mover descripción local
-
-    updateTablesList(newName);
-    loadTableToUi(newName);
-
-    emit tableSelected(newName);
-    emit schemaChanged(newName, DataModel::instance().schema(newName));
+void TablesPage::updateAutoControlsSensitivity() {
+    const bool isLong =
+        propAutoFormato->currentText().startsWith("Long", Qt::CaseInsensitive);
+    propAutoNewValues->setEnabled(isLong);
 }
 
-void TablesPage::onEliminarTabla() {
-    auto *item = tablesList->currentItem();
-    if (!item) return;
-    QString name = item->text();
-    if (QMessageBox::question(this,"Eliminar",
-                              "¿Eliminar la tabla \"" + name + "\"?") != QMessageBox::Yes) return;
+void TablesPage::makePropsUniformWidth()
+{
+    // Ajusta este valor a tu gusto (p. ej. 360–460)
+    const int targetW = 420;
 
-    QString err;
-    if (!DataModel::instance().dropTable(name, &err)) {
-        QMessageBox::warning(this,"Eliminar", err);
-        return;
+    QList<QWidget*> fields = {
+        propFormato, propAutoFormato, propAutoNewValues,
+        propTitulo, propValorPred, propIndexado,
+        propTextSize
+        // (Requerido queda fuera para que no se vea raro)
+    };
+
+    for (auto *w : fields) {
+        if (!w) continue;
+        w->setMinimumWidth(targetW);
+        w->setMaximumWidth(targetW);
+        w->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     }
-
-
-    updateTablesList();
-    fieldsTable->setRowCount(0);
-    tableNameEdit->clear();
-    tableDescEdit->clear();
-    clearPropsUi();
-
-    emit schemaChanged(name, {}); // esquema vacío tras eliminar
 }
+
+bool TablesPage::eventFilter(QObject* obj, QEvent* ev) {
+    if (obj == propTextSize && ev->type() == QEvent::KeyPress) {
+        auto *ke = static_cast<QKeyEvent*>(ev);
+        if (ke->key() == Qt::Key_Return || ke->key() == Qt::Key_Enter) {
+            onPropertyChanged();
+            return true; // no dejes que el grid cambie de fila
+        }
+    }
+    return QWidget::eventFilter(obj, ev);
+}
+
+
+
+

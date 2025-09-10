@@ -16,7 +16,21 @@
 #include <QTableWidgetItem>
 #include <QSignalBlocker>
 #include <QItemSelectionModel>
-#include <algorithm>        // std::sort, std::clamp
+#include <QCheckBox>
+#include <QPlainTextEdit>
+#include <QSplitter>
+#include <QHBoxLayout>
+#include <QBrush>
+#include <QColor>
+#include <algorithm>
+#include <QTimer>
+#include <QLocale>
+#include <QSet>
+#include <QDebug>
+#include <QStyledItemDelegate>
+
+
+
 
 // ---- helper de tipo (texto -> etiqueta estable) ----
 static inline QString normType(const QString& t) {
@@ -25,7 +39,9 @@ static inline QString normType(const QString& t) {
     if (s.startsWith(u"número") || s.startsWith(u"numero")) return "numero";
     if (s.startsWith(u"fecha")) return "fecha_hora";
     if (s.startsWith(u"moneda")) return "moneda";
-    return "texto";
+    if (s.startsWith(u"sí/no") || s.startsWith(u"si/no")) return "booleano";
+    if (s.startsWith(u"texto largo")) return "texto_largo";
+    return "texto"; // Texto corto
 }
 
 RecordsPage::RecordsPage(QWidget* parent)
@@ -35,49 +51,49 @@ RecordsPage::RecordsPage(QWidget* parent)
     ui->setupUi(this);
 
     // ---- Conexiones de encabezado ----
-    connect(ui->cbTabla,              QOverload<int>::of(&QComboBox::currentIndexChanged),
+    connect(ui->cbTabla,    QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &RecordsPage::onTablaChanged);
-    connect(ui->leBuscar,             &QLineEdit::textChanged,
+    connect(ui->leBuscar,   &QLineEdit::textChanged,
             this, &RecordsPage::onBuscarChanged);
-    connect(ui->btnLimpiarBusqueda,   &QToolButton::clicked,
+    connect(ui->btnLimpiarBusqueda, &QToolButton::clicked,
             this, &RecordsPage::onLimpiarBusqueda);
 
-    connect(ui->btnInsertar,          &QToolButton::clicked, this, &RecordsPage::onInsertar);
-    connect(ui->btnEditar,            &QToolButton::clicked, this, &RecordsPage::onEditar);
-    connect(ui->btnEliminar,          &QToolButton::clicked, this, &RecordsPage::onEliminar);
-    connect(ui->btnGuardar,           &QToolButton::clicked, this, &RecordsPage::onGuardar);
-    connect(ui->btnCancelar,          &QToolButton::clicked, this, &RecordsPage::onCancelar);
-
     // ---- Tabla ----
-    connect(ui->twRegistros,          &QTableWidget::itemSelectionChanged,
+    connect(ui->twRegistros, &QTableWidget::itemSelectionChanged,
             this, &RecordsPage::onSelectionChanged);
-    connect(ui->twRegistros,          &QTableWidget::itemDoubleClicked,
+    connect(ui->twRegistros, &QTableWidget::itemDoubleClicked,
             this, &RecordsPage::onItemDoubleClicked);
+    connect(ui->twRegistros, &QTableWidget::itemChanged,
+            this, &RecordsPage::onItemChanged);
 
-    // ---- Editor (maqueta) ----
-    connect(ui->btnLimpiarForm,       &QToolButton::clicked, this, &RecordsPage::onLimpiarFormulario);
-    connect(ui->btnGenerarDummy,      &QToolButton::clicked, this, &RecordsPage::onGenerarDummyFila);
+    // Después de crear ui->twRegistros y el resto de conexiones:
+    connect(ui->twRegistros, &QTableWidget::currentCellChanged,
+            this, &RecordsPage::onCurrentCellChanged);
 
-    // ---- Paginación (etiqueta) ----
-    connect(ui->btnPrimero,           &QToolButton::clicked, this, &RecordsPage::onPrimero);
-    connect(ui->btnAnterior,          &QToolButton::clicked, this, &RecordsPage::onAnterior);
-    connect(ui->btnSiguiente,         &QToolButton::clicked, this, &RecordsPage::onSiguiente);
-    connect(ui->btnUltimo,            &QToolButton::clicked, this, &RecordsPage::onUltimo);
 
     // Config base de la tabla
     ui->twRegistros->setSelectionBehavior(QAbstractItemView::SelectRows);
     ui->twRegistros->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    ui->twRegistros->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    ui->twRegistros->setEditTriggers(
+        QAbstractItemView::DoubleClicked
+        | QAbstractItemView::SelectedClicked
+        | QAbstractItemView::EditKeyPressed);
     ui->twRegistros->setAlternatingRowColors(true);
-    ui->twRegistros->setSortingEnabled(true);
+    ui->twRegistros->setSortingEnabled(false);
     ui->twRegistros->verticalHeader()->setVisible(false);
-    ui->twRegistros->horizontalHeader()->setStretchLastSection(true);
 
-    // Demo por defecto si no hay tabla (se mostrará hasta que Shell/Tablas seleccionen)
+    auto *hh = ui->twRegistros->horizontalHeader();
+    hh->setStretchLastSection(false);
+    hh->setSectionResizeMode(QHeaderView::Interactive);
+    hh->setDefaultSectionSize(133); // ancho por columna
+    hh->setSortIndicatorShown(false);
+    hh->setSectionsClickable(false);
+
+    // Limpiar “chrome”
+    hideLegacyChrome();
     ui->cbTabla->clear();
-    ui->cbTabla->addItems(QStringList() << "Estudiantes" << "Cursos" << "Inscripciones");
-    construirColumnasDemo();
-    cargarDatosDemo();
+    ui->twRegistros->setColumnCount(0);
+    ui->twRegistros->setRowCount(0);
 
     setMode(Mode::Idle);
     updateStatusLabels();
@@ -93,11 +109,7 @@ RecordsPage::~RecordsPage()
 
 void RecordsPage::setTableFromFieldDefs(const QString& name, const Schema& defs)
 {
-    // Desuscribir señal anterior de filas
-    if (m_rowsConn) {
-        disconnect(m_rowsConn);
-        m_rowsConn = QMetaObject::Connection();
-    }
+    if (m_rowsConn) { disconnect(m_rowsConn); m_rowsConn = QMetaObject::Connection(); }
 
     m_tableName = name;
     m_schema    = defs;
@@ -106,46 +118,44 @@ void RecordsPage::setTableFromFieldDefs(const QString& name, const Schema& defs)
     {
         QSignalBlocker block(ui->cbTabla);
         int idx = ui->cbTabla->findText(name);
-        if (idx < 0) {
-            ui->cbTabla->addItem(name);
-            idx = ui->cbTabla->count() - 1;
-        }
+        if (idx < 0) { ui->cbTabla->addItem(name); idx = ui->cbTabla->count() - 1; }
         ui->cbTabla->setCurrentIndex(idx);
     }
 
-    ui->lblFormTitle->setText(QStringLiteral("Editor — %1").arg(name.isEmpty() ? "sin selección" : name));
+    if (auto *lbl = findChild<QLabel*>("lblFormTitle")) lbl->clear();
 
     applyDefs(defs);
     reloadRows();
 
-    // Suscribirse a cambios de filas del modelo
+    // Refrescar al vuelo si cambian filas en el modelo
     m_rowsConn = connect(&DataModel::instance(), &DataModel::rowsChanged, this,
-                         [this](const QString& t){
-                             if (t == m_tableName) reloadRows();
-                         });
+                         [this](const QString& t){ if (t == m_tableName) reloadRows(); });
 
     setMode(Mode::Idle);
     updateStatusLabels();
     updateNavState();
 }
 
-/* =================== Construcción de columnas desde el esquema =================== */
+/* =================== Construcción de columnas =================== */
 
 void RecordsPage::applyDefs(const Schema& defs)
 {
     ui->twRegistros->clear();
     ui->twRegistros->setRowCount(0);
 
-    if (defs.isEmpty()) {
-        ui->twRegistros->setColumnCount(0);
-        return;
-    }
+    if (defs.isEmpty()) { ui->twRegistros->setColumnCount(0); return; }
 
     ui->twRegistros->setColumnCount(defs.size());
-    QStringList headers;
-    headers.reserve(defs.size());
+    QStringList headers; headers.reserve(defs.size());
     for (const auto& f : defs) headers << f.name;
     ui->twRegistros->setHorizontalHeaderLabels(headers);
+
+    auto *hh = ui->twRegistros->horizontalHeader();
+    hh->setDefaultSectionSize(133);
+    for (int c = 0; c < defs.size(); ++c) {
+        hh->setSectionResizeMode(c, QHeaderView::Interactive);
+        ui->twRegistros->setColumnWidth(c, 133);
+    }
 }
 
 QString RecordsPage::formatCell(const FieldDef& fd, const QVariant& v) const
@@ -154,117 +164,360 @@ QString RecordsPage::formatCell(const FieldDef& fd, const QVariant& v) const
     const QString t = normType(fd.type);
     if (t == "fecha_hora") return v.toDate().toString("yyyy-MM-dd");
     if (t == "moneda")     return QString::number(v.toDouble(), 'f', 2);
-    // Numero / Auto -> as string
-    return v.toString();
+    return v.toString(); // número/auto/texto
 }
 
 void RecordsPage::reloadRows()
 {
     if (m_tableName.isEmpty() || m_schema.isEmpty()) return;
 
-    const auto& vec = DataModel::instance().rows(m_tableName);
+    m_isReloading = true;
 
-    // Intentar preservar selección
-    int prevSel = -1;
+    // 1) Si hubiera un editor inline activo, elimínalo con seguridad
+    if (QWidget *ed = ui->twRegistros->viewport()->findChild<QWidget*>(
+            "qt_editing_widget", Qt::FindChildrenRecursively)) {
+        ed->hide();
+        ed->deleteLater();                 // evita el overlay que tapa el "1"
+    }
+    // Limpia estado interno de editores
+    ui->twRegistros->setItemDelegate(new QStyledItemDelegate(ui->twRegistros));
+
+    // 2) Sorting siempre OFF mientras exista la fila (New)
+    ui->twRegistros->setSortingEnabled(false);
+
+    const auto& rowsData = DataModel::instance().rows(m_tableName);
+
+    // 3) Preservar selección actual
+    int prevSelRow = -1, prevSelCol = -1;
     if (auto *sm = ui->twRegistros->selectionModel()) {
-        const auto rows = sm->selectedRows();
-        if (!rows.isEmpty()) prevSel = rows.first().row();
+        const auto idx = sm->currentIndex();
+        prevSelRow = idx.row();
+        prevSelCol = idx.column();
     }
 
-    QSignalBlocker block(ui->twRegistros);
-    ui->twRegistros->setRowCount(0);
+    // 4) Reconstrucción con señales bloqueadas
+    {
+        QSignalBlocker block(ui->twRegistros);
+        ui->twRegistros->clearContents();
+        ui->twRegistros->setRowCount(0);
 
-    for (int i = 0; i < vec.size(); ++i) {
-        const Record& r = vec[i];
-        const int row = ui->twRegistros->rowCount();
-        ui->twRegistros->insertRow(row);
-        for (int c = 0; c < m_schema.size(); ++c) {
-            const FieldDef& fd = m_schema[c];
-            const QVariant  vv = (c < r.size() ? r[c] : QVariant());
-            ui->twRegistros->setItem(row, c, new QTableWidgetItem(formatCell(fd, vv)));
+        for (int r = 0; r < rowsData.size(); ++r) {
+            const Record& rec = rowsData[r];
+            ui->twRegistros->insertRow(r);
+
+            for (int c = 0; c < m_schema.size(); ++c) {
+                const FieldDef& fd = m_schema[c];
+                const QVariant  vv = (c < rec.size() ? rec[c] : QVariant());
+                const QString   t  = normType(fd.type);
+
+                if (t == "booleano") {
+                    auto *wrap = new QWidget(ui->twRegistros);
+                    auto *hl   = new QHBoxLayout(wrap);
+                    hl->setContentsMargins(0,0,0,0);
+                    auto *cb   = new QCheckBox(wrap);
+                    cb->setChecked(vv.toBool());
+                    hl->addWidget(cb);
+                    hl->addStretch(1);
+                    ui->twRegistros->setCellWidget(r, c, wrap);
+
+                    connect(cb, &QCheckBox::checkStateChanged, this, [this, r](int){
+                        if (m_isReloading || m_isCommitting) return;
+                        Record rowRec = rowToRecord(r);
+                        QString err;
+                        if (!DataModel::instance().validate(m_schema, rowRec, &err)) { reloadRows(); return; }
+                        DataModel::instance().updateRow(m_tableName, r, rowRec, &err);
+                    });
+                } else {
+                    auto *it = new QTableWidgetItem(formatCell(fd, vv));
+                    Qt::ItemFlags fl = it->flags();
+                    if (fd.pk || t == "autonumeracion")
+                        fl &= ~Qt::ItemIsEditable;   // ID/PK no editable
+                    else
+                        fl |=  Qt::ItemIsEditable;
+                    it->setFlags(fl);
+                    ui->twRegistros->setItem(r, c, it);
+                }
+            }
+        }
+
+        // 5) Triggers de edición seguros (NO AllEditTriggers)
+        ui->twRegistros->setEditTriggers(
+            QAbstractItemView::DoubleClicked
+            | QAbstractItemView::SelectedClicked
+            | QAbstractItemView::EditKeyPressed);
+    }
+
+    // 6) Restaurar selección SIN disparar señales
+    if (ui->twRegistros->rowCount() > 0) {
+        int selRow = std::clamp(prevSelRow, 0, ui->twRegistros->rowCount() - 1);
+        int selCol = std::clamp(prevSelCol, 0, ui->twRegistros->columnCount() - 1);
+        QSignalBlocker blockSel(ui->twRegistros);
+        ui->twRegistros->setCurrentCell(selRow, selCol);
+        ui->twRegistros->selectRow(selRow);
+    }
+
+    // 7) Defensa: jamás debe haber cellWidget en la columna ID de filas de datos
+    int idCol = -1;
+    for (int c = 0; c < m_schema.size(); ++c)
+        if (normType(m_schema[c].type) == "autonumeracion") { idCol = c; break; }
+    if (idCol >= 0) {
+        const int dataRows = ui->twRegistros->rowCount();
+        for (int r = 0; r < dataRows; ++r) {
+            if (auto *w = ui->twRegistros->cellWidget(r, idCol))
+                ui->twRegistros->removeCellWidget(r, idCol);
         }
     }
 
-    // Restaurar selección (o seleccionar la primera si nada)
-    if (ui->twRegistros->rowCount() > 0) {
-        int sel = std::clamp(prevSel, 0, ui->twRegistros->rowCount() - 1);
-        ui->twRegistros->selectRow(sel);
+    // 8) Fila (New) con editores al final
+    addNewRowEditors();
+
+    // 9) “Pinear” el ID visible de la primera fila (por si algún editor lo tapaba)
+    if (idCol >= 0) {
+        const auto& vrows = DataModel::instance().rows(m_tableName);
+        if (!vrows.isEmpty() && !vrows[0].isEmpty()) {
+            QVariant v0 = (idCol < vrows[0].size() ? vrows[0][idCol] : QVariant());
+            ui->twRegistros->removeCellWidget(0, idCol);
+            QTableWidgetItem *it0 = ui->twRegistros->item(0, idCol);
+            if (!it0) { it0 = new QTableWidgetItem; ui->twRegistros->setItem(0, idCol, it0); }
+            it0->setFlags(it0->flags() & ~Qt::ItemIsEditable);
+            it0->setData(Qt::DisplayRole, v0.isValid() && !v0.isNull() ? v0 : QVariant(1));
+            // qDebug() << "ID[0] =" << v0 << " itemText=" << it0->text();
+        }
     }
+
+    // 10) No reactivar sorting aquí
     updateStatusLabels();
     updateNavState();
+
+    m_isReloading = false;
 }
+
+
+
+/* =================== Nueva fila tipo Access =================== */
+
+static inline QString normTypeDs(const QString& t) {
+    const QString s = t.trimmed().toLower();
+    if (s.startsWith(u"auto")) return "autonumeracion";
+    if (s.startsWith(u"número") || s.startsWith(u"numero")) return "numero";
+    if (s.startsWith(u"fecha")) return "fecha_hora";
+    if (s.startsWith(u"moneda")) return "moneda";
+    if (s.startsWith(u"sí/no") || s.startsWith(u"si/no")) return "booleano";
+    if (s.startsWith(u"texto largo")) return "texto_largo";
+    return "texto";
+}
+
+QWidget* RecordsPage::makeEditorFor(const FieldDef& fd) const
+{
+    const QString t = normType(fd.type);
+
+    if (t == "autonumeracion") {
+        auto *le = new QLineEdit;
+        le->setReadOnly(true);
+        le->setPlaceholderText("(New)");
+        le->setStyleSheet("color:#777;");
+        return le;
+    }
+
+    if (t == "fecha_hora") {
+        auto *de = new QDateEdit;
+        de->setCalendarPopup(true);
+        de->setDisplayFormat("yyyy-MM-dd");
+        de->setDate(QDate::currentDate());
+        connect(de, &QDateEdit::dateChanged, this, &RecordsPage::prepareNextNewRow);
+        return de;
+    }
+
+
+    if (t == "moneda") {
+        auto *ds = new QDoubleSpinBox;
+        ds->setDecimals(2);
+        ds->setRange(-1e12, 1e12);
+        ds->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        connect(ds, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, &RecordsPage::prepareNextNewRow);
+        connect(ds, &QDoubleSpinBox::editingFinished, this, &RecordsPage::commitNewRow);
+        return ds;
+    }
+
+    if (t == "booleano") {
+        auto *cb = new QCheckBox;
+        cb->setTristate(false);
+        connect(cb, &QCheckBox::checkStateChanged, this, &RecordsPage::prepareNextNewRow);
+        connect(cb, &QCheckBox::checkStateChanged, this, &RecordsPage::commitNewRow);
+        // lo devolvemos tal cual; abajo soportamos tanto wrap como directo
+        return cb;
+    }
+
+    if (t == "texto_largo") {
+        auto *le = new QLineEdit; // inline simple
+        connect(le, &QLineEdit::textEdited, this, &RecordsPage::prepareNextNewRow);
+        connect(le, &QLineEdit::returnPressed, this, &RecordsPage::commitNewRow);
+        return le;
+    }
+
+    // texto corto / número
+    auto *le = new QLineEdit;
+    if (fd.size > 0) le->setMaxLength(fd.size);
+    connect(le, &QLineEdit::textEdited, this, &RecordsPage::prepareNextNewRow);
+    connect(le, &QLineEdit::editingFinished, this, &RecordsPage::commitNewRow);
+    return le;
+}
+
+
+QVariant RecordsPage::editorValue(QWidget* w, const QString& t) const
+{
+    const QString typ = normType(t);
+
+    if (typ == "booleano") {
+        if (auto *cb = qobject_cast<QCheckBox*>(w)) return cb->isChecked();
+        if (auto *cb2 = w->findChild<QCheckBox*>())   return cb2->isChecked();
+        return false;
+    }
+    if (typ == "autonumeracion") {
+        if (auto *le = qobject_cast<QLineEdit*>(w)) return le->text().trimmed();
+        return QVariant();
+    }
+    if (typ == "fecha_hora") {
+        if (auto *de = qobject_cast<QDateEdit*>(w)) return de->date();
+        return QVariant();
+    }
+    if (typ == "moneda") {
+        if (auto *ds = qobject_cast<QDoubleSpinBox*>(w)) return ds->value();
+        return QVariant();
+    }
+    if (auto *le = qobject_cast<QLineEdit*>(w)) return le->text();
+    return QVariant();
+}
+
+
+void RecordsPage::clearNewRowEditors()
+{
+    int last = ui->twRegistros->rowCount() - 1;
+    if (last < 0) return;
+    for (int c = 0; c < ui->twRegistros->columnCount(); ++c) {
+        if (auto *w = ui->twRegistros->cellWidget(last, c)) {
+            if (auto *le = qobject_cast<QLineEdit*>(w)) le->clear();
+            else if (auto *cb = qobject_cast<QCheckBox*>(w)) cb->setChecked(false);
+            else if (auto *chk = w->findChild<QCheckBox*>()) chk->setChecked(false);
+            else if (auto *de  = qobject_cast<QDateEdit*>(w)) de->setDate(QDate::currentDate());
+            else if (auto *ds  = qobject_cast<QDoubleSpinBox*>(w)) ds->setValue(0.0);
+        }
+    }
+}
+
+
+void RecordsPage::addNewRowEditors(qint64 presetId)
+{
+    if (m_schema.isEmpty()) return;
+
+    const int newRow = ui->twRegistros->rowCount();
+    ui->twRegistros->insertRow(newRow);
+
+    // localizar la primera columna autonumeración (ID)
+    int idCol = -1;
+    for (int c = 0; c < m_schema.size(); ++c) {
+        if (normType(m_schema[c].type) == "autonumeracion") { idCol = c; break; }
+    }
+
+    // Preasigna el ID real y deja la celda NO editable (sin cellWidget)
+    if (idCol >= 0) {
+        qint64 idVal;
+        if (presetId >= 0) {
+            idVal = presetId;
+        } else {
+            // Primera (New) tras recargar: consulta al modelo una sola vez
+            idVal = DataModel::instance().nextAutoNumber(m_tableName).toLongLong();
+        }
+        auto *it = new QTableWidgetItem;
+        it->setData(Qt::DisplayRole, static_cast<qlonglong>(idVal)); // pinta como número, no texto
+        it->setFlags(it->flags() & ~Qt::ItemIsEditable);
+        ui->twRegistros->setItem(newRow, idCol, it);
+    }
+
+    // Resto de columnas: editores inline
+    for (int c = 0; c < m_schema.size(); ++c) {
+        if (c == idCol) continue;
+        const FieldDef& fd = m_schema[c];
+        QWidget* ed = makeEditorFor(fd);
+        ui->twRegistros->setCellWidget(newRow, c, ed);
+    }
+}
+
+
+
+void RecordsPage::commitNewRow()
+{
+    if (m_tableName.isEmpty() || m_schema.isEmpty()) return;
+    if (m_isCommitting || m_isReloading) return;  // ← NUEVO
+
+    m_isCommitting = true;                        // ← NUEVO
+
+    const int last   = ui->twRegistros->rowCount() - 1;
+    const int rowIns = m_preparedNextNew ? (last - 1) : last;
+    if (rowIns < 0) { m_isCommitting = false; return; }
+
+    Record r; r.resize(m_schema.size());
+    for (int c = 0; c < m_schema.size(); ++c) {
+        const FieldDef& fd = m_schema[c];
+        const QString t = normType(fd.type);
+
+        if (t == "autonumeracion") {
+            QVariant v;
+            if (auto *it = ui->twRegistros->item(rowIns, c)) v = it->text();
+            else v = DataModel::instance().nextAutoNumber(m_tableName);
+            r[c] = v;
+        } else {
+            QWidget* w = ui->twRegistros->cellWidget(rowIns, c);
+            r[c] = editorValue(w, fd.type);
+        }
+    }
+
+    QString err;
+    if (!DataModel::instance().insertRow(m_tableName, r, &err)) {
+        QMessageBox::warning(this, tr("No se pudo insertar"), err);
+        m_isCommitting = false;    // importantísimo: salir limpiando el flag
+        return;
+    }
+
+
+    m_preparedNextNew = false;
+    reloadRows();                                   // seguro ahora
+    const int rows = ui->twRegistros->rowCount();
+    if (rows >= 2) ui->twRegistros->setCurrentCell(rows - 2, 0);
+
+    m_isCommitting = false;                         // ← NUEVO
+}
+
+
 
 /* =================== Helpers de estado/UI =================== */
 
 void RecordsPage::setMode(Mode m)
 {
     m_mode = m;
-    // Guardar/Cancelar quedan deshabilitados en este flujo
     updateHeaderButtons();
 }
 
 void RecordsPage::updateHeaderButtons()
 {
-    const bool haveSel = !ui->twRegistros->selectedItems().isEmpty();
-    ui->btnInsertar->setEnabled(true);
-    ui->btnEditar->setEnabled(haveSel);
-    ui->btnEliminar->setEnabled(haveSel);
-    ui->btnGuardar->setEnabled(false);
-    ui->btnCancelar->setEnabled(false);
+    // no hay toolbar visible
 }
 
 void RecordsPage::updateStatusLabels()
 {
-    int total = ui->twRegistros->rowCount();
-    int visibles = 0;
-    for (int r = 0; r < total; ++r)
-        if (!ui->twRegistros->isRowHidden(r)) ++visibles;
-
-    ui->lblTotal->setText(QStringLiteral("Mostrando %1 de %2").arg(visibles).arg(total));
-    ui->lblPagina->setText(QStringLiteral("%1 / %2").arg(m_currentPage).arg(1)); // mock
-}
-
-/* =================== Construcción demo (legacy) =================== */
-
-void RecordsPage::construirColumnasDemo()
-{
-    ui->twRegistros->clear();
-    ui->twRegistros->setColumnCount(6);
-    ui->twRegistros->setHorizontalHeaderLabels(
-        QStringList() << "ID" << "Nombre" << "Correo" << "Teléfono" << "Fecha" << "Activo");
-}
-
-void RecordsPage::cargarDatosDemo()
-{
-    ui->twRegistros->setRowCount(0);
-    for (int i = 0; i < 30; ++i) {
-        const int row = ui->twRegistros->rowCount();
-        ui->twRegistros->insertRow(row);
-
-        auto* c0 = new QTableWidgetItem(QString::number(1000 + i));
-        auto* c1 = new QTableWidgetItem(QStringLiteral("Nombre %1").arg(i + 1));
-        auto* c2 = new QTableWidgetItem(QStringLiteral("user%1@email.com").arg(i + 1));
-        auto* c3 = new QTableWidgetItem(QStringLiteral("9999-00%1").arg(i % 10));
-        auto* c4 = new QTableWidgetItem(QDate::currentDate().addDays(-i).toString("yyyy-MM-dd"));
-        auto* c5 = new QTableWidgetItem((i % 3 == 0) ? "No" : "Sí");
-
-        ui->twRegistros->setItem(row, 0, c0);
-        ui->twRegistros->setItem(row, 1, c1);
-        ui->twRegistros->setItem(row, 2, c2);
-        ui->twRegistros->setItem(row, 3, c3);
-        ui->twRegistros->setItem(row, 4, c4);
-        ui->twRegistros->setItem(row, 5, c5);
-    }
+    if (auto *lbl = findChild<QLabel*>("lblTotal"))  lbl->clear();
+    if (auto *lbl = findChild<QLabel*>("lblPagina")) lbl->clear();
 }
 
 /* =================== Acciones de encabezado =================== */
 
 void RecordsPage::onTablaChanged(int /*index*/)
 {
-    // En sandbox: reconstruimos demo si no hay selección de Shell
     if (m_tableName.isEmpty()) {
-        construirColumnasDemo();
-        cargarDatosDemo();
+        ui->twRegistros->clear();
+        ui->twRegistros->setRowCount(0);
+        ui->twRegistros->setColumnCount(0);
         ui->leBuscar->clear();
         setMode(Mode::Idle);
         updateStatusLabels();
@@ -285,7 +538,7 @@ void RecordsPage::onLimpiarBusqueda()
     ui->leBuscar->setFocus();
 }
 
-/* ============ CRUD real con DataModel ============ */
+/* ============ CRUD (slots vivos pero ocultos en UI) ============ */
 
 bool RecordsPage::editRecordDialog(const QString& title, const Schema& s, Record& r, bool isInsert, QString* errMsg)
 {
@@ -295,274 +548,88 @@ bool RecordsPage::editRecordDialog(const QString& title, const Schema& s, Record
     auto *fl  = new QFormLayout;
     vl->addLayout(fl);
 
-    // Asegurar tamaño de r
     if (r.size() < s.size()) r.resize(s.size());
 
-    // Edits por columna
     QVector<QWidget*> editors; editors.reserve(s.size());
-
     for (int i = 0; i < s.size(); ++i) {
         const FieldDef& fd = s[i];
         const QString t = normType(fd.type);
         QWidget* w = nullptr;
 
         if (t == "autonumeracion") {
-            // Solo lectura (lo asigna el modelo si está vacío)
-            auto *le = new QLineEdit;
-            le->setReadOnly(true);
-            le->setPlaceholderText("[auto]");
+            auto *le = new QLineEdit; le->setReadOnly(true); le->setPlaceholderText("[auto]");
             if (r[i].isValid() && !r[i].isNull()) le->setText(r[i].toString());
             w = le;
         } else if (t == "numero") {
-            auto *le = new QLineEdit;
-            le->setValidator(new QIntValidator(le));
+            auto *le = new QLineEdit; le->setValidator(new QIntValidator(le));
             if (r[i].isValid() && !r[i].isNull()) le->setText(QString::number(r[i].toLongLong()));
             w = le;
         } else if (t == "moneda") {
-            auto *ds = new QDoubleSpinBox;
-            ds->setDecimals(2);
-            ds->setRange(-1e12, 1e12);
+            auto *ds = new QDoubleSpinBox; ds->setDecimals(2); ds->setRange(-1e12, 1e12);
             if (r[i].isValid() && !r[i].isNull()) ds->setValue(r[i].toDouble());
             w = ds;
         } else if (t == "fecha_hora") {
-            auto *de = new QDateEdit;
-            de->setCalendarPopup(true);
-            de->setDisplayFormat("yyyy-MM-dd");
-            if (r[i].canConvert<QDate>() && r[i].toDate().isValid())
-                de->setDate(r[i].toDate());
-            else
-                de->setDate(QDate::currentDate());
+            auto *de = new QDateEdit; de->setCalendarPopup(true); de->setDisplayFormat("yyyy-MM-dd");
+            if (r[i].canConvert<QDate>() && r[i].toDate().isValid()) de->setDate(r[i].toDate());
+            else de->setDate(QDate::currentDate());
             w = de;
-        } else { // texto
-            auto *le = new QLineEdit;
-            if (fd.size > 0) le->setMaxLength(fd.size);
-            if (r[i].isValid() && !r[i].isNull()) le->setText(r[i].toString());
-            else if (isInsert && !fd.valorPredeterminado.isEmpty()) le->setText(fd.valorPredeterminado);
-            w = le;
+        } else if (t == "booleano") {
+            auto *cb = new QCheckBox("Sí"); cb->setChecked(r[i].toBool()); w = cb;
+        } else if (t == "texto_largo") {
+            auto *pt = new QPlainTextEdit; pt->setPlainText(r[i].toString()); w = pt;
+        } else { // texto corto
+            auto *le = new QLineEdit; le->setText(r[i].toString()); w = le;
         }
 
-        editors.push_back(w);
-        fl->addRow(fd.name + ":", w);
+        editors << w;
+        fl->addRow(s[i].name + ":", w);
     }
 
-    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    QDialogButtonBox* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     vl->addWidget(bb);
     QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
-    while (true) {
-        if (dlg.exec() != QDialog::Accepted) return false;
+    if (dlg.exec() != QDialog::Accepted) return false;
 
-        // Volcar valores
-        for (int i = 0; i < s.size(); ++i) {
-            const FieldDef& fd = s[i];
-            const QString t = normType(fd.type);
-            QWidget* w = editors[i];
-
-            if (t == "autonumeracion") {
-                auto *le = qobject_cast<QLineEdit*>(w);
-                const QString txt = le->text().trimmed();
-                r[i] = txt.isEmpty() ? QVariant() : QVariant(txt.toLongLong());
-            } else if (t == "numero") {
-                auto *le = qobject_cast<QLineEdit*>(w);
-                r[i] = le->text().trimmed().isEmpty() ? QVariant() : QVariant(le->text().toLongLong());
-            } else if (t == "moneda") {
-                auto *ds = qobject_cast<QDoubleSpinBox*>(w);
-                r[i] = QVariant(ds->value());
-            } else if (t == "fecha_hora") {
-                auto *de = qobject_cast<QDateEdit*>(w);
-                r[i] = QVariant(de->date());
-            } else {
-                auto *le = qobject_cast<QLineEdit*>(w);
-                r[i] = QVariant(le->text());
-            }
-        }
-
-        // Validación del modelo (convierte tipos)
-        Record tmp = r;
-        QString vErr;
-        if (!DataModel::instance().validate(s, tmp, &vErr)) {
-            if (errMsg) *errMsg = vErr;
-            QMessageBox::warning(this, tr("Validación"), vErr);
-            continue; // permite corregir
-        }
-        // Si ok, dejamos r convertido
-        r = tmp;
-        return true;
-    }
-}
-
-void RecordsPage::onInsertar()
-{
-    if (m_tableName.isEmpty() || m_schema.isEmpty()) return;
-
-    Record r; // vacío -> el modelo hará autonum si corresponde
-    QString err;
-    if (!editRecordDialog(tr("Insertar en %1").arg(m_tableName), m_schema, r, /*isInsert*/true, &err))
-        return;
-
-    if (!DataModel::instance().insertRow(m_tableName, r, &err)) {
-        QMessageBox::warning(this, tr("Insertar"), err);
-        return;
+    for (int i = 0; i < s.size(); ++i) {
+        const QString t = normType(s[i].type);
+        QWidget* w = editors[i];
+        QVariant v;
+        if (t == "autonumeracion") v = r[i];
+        else if (auto *le = qobject_cast<QLineEdit*>(w)) v = le->text();
+        else if (auto *ds = qobject_cast<QDoubleSpinBox*>(w)) v = ds->value();
+        else if (auto *de = qobject_cast<QDateEdit*>(w)) v = de->date();
+        else if (auto *cb = qobject_cast<QCheckBox*>(w)) v = cb->isChecked();
+        else if (auto *pt = qobject_cast<QPlainTextEdit*>(w)) v = pt->toPlainText();
+        r[i] = v;
     }
 
-    emit recordInserted(m_tableName);
-    reloadRows();
-    // Seleccionar última fila
-    if (ui->twRegistros->rowCount() > 0)
-        ui->twRegistros->selectRow(ui->twRegistros->rowCount() - 1);
-    updateNavState();
+    if (!DataModel::instance().validate(s, r, errMsg)) return false;
+    return true;
 }
 
-void RecordsPage::onEditar()
-{
-    if (m_tableName.isEmpty() || m_schema.isEmpty()) return;
+/* =================== Tabla / selección =================== */
 
-    const auto sel = ui->twRegistros->selectionModel()->selectedRows();
-    if (sel.isEmpty()) return;
-    const int row = sel.first().row();
+void RecordsPage::onSelectionChanged() { updateHeaderButtons(); }
+void RecordsPage::onItemDoubleClicked(QTableWidgetItem * /*item*/) { onEditar(); }
 
-    const auto& vec = DataModel::instance().rows(m_tableName);
-    if (row < 0 || row >= vec.size()) return;
-    Record r = vec[row];
+/* =================== Editor legacy (oculto) =================== */
+void RecordsPage::limpiarFormulario() {}
+void RecordsPage::cargarFormularioDesdeFila(int) {}
+void RecordsPage::escribirFormularioEnFila(int) {}
+int  RecordsPage::agregarFilaDesdeFormulario() { return -1; }
 
-    QString err;
-    if (!editRecordDialog(tr("Editar fila %1").arg(row+1), m_schema, r, /*isInsert*/false, &err))
-        return;
-
-    if (!DataModel::instance().updateRow(m_tableName, row, r, &err)) {
-        QMessageBox::warning(this, tr("Editar"), err);
-        return;
-    }
-
-    emit recordUpdated(m_tableName, row);
-    reloadRows();
-    if (row < ui->twRegistros->rowCount()) ui->twRegistros->selectRow(row);
-    updateNavState();
-}
-
-void RecordsPage::onEliminar()
-{
-    if (m_tableName.isEmpty() || m_schema.isEmpty()) return;
-
-    const auto selRows = ui->twRegistros->selectionModel()->selectedRows();
-    if (selRows.isEmpty()) return;
-
-    if (QMessageBox::question(this, tr("Eliminar"),
-                              tr("¿Eliminar %1 registro(s)?").arg(selRows.size())) != QMessageBox::Yes) return;
-
-    QList<int> rows;
-    rows.reserve(selRows.size());
-    for (const auto& mi : selRows) rows << mi.row();
-    std::sort(rows.begin(), rows.end(), std::greater<int>());
-
-    QString err;
-    if (!DataModel::instance().removeRows(m_tableName, rows, &err)) {
-        QMessageBox::warning(this, tr("Eliminar"), err);
-        return;
-    }
-
-    emit recordDeleted(m_tableName, rows);
-    reloadRows();
-    updateNavState();
-}
-
-void RecordsPage::onGuardar()  { /* no-op en este flujo */ }
-void RecordsPage::onCancelar() { /* no-op en este flujo */ }
-
-/* =================== Tabla / selección / doble clic =================== */
-
-void RecordsPage::onSelectionChanged()
-{
-    const auto selRows = ui->twRegistros->selectionModel()->selectedRows();
-    if (selRows.size() == 1) {
-        ui->lblFormTitle->setText(QStringLiteral("Editor — (1 seleccionado)"));
-    } else if (selRows.size() > 1) {
-        ui->lblFormTitle->setText(QStringLiteral("Editor — (%1 seleccionados)").arg(selRows.size()));
-    } else {
-        ui->lblFormTitle->setText(QStringLiteral("Editor — (sin selección)"));
-    }
-    updateHeaderButtons();
-    updateNavState();
-}
-
-void RecordsPage::onItemDoubleClicked()
-{
-    onEditar();
-}
-
-/* =================== Editor (maqueta legacy) =================== */
-
-void RecordsPage::onLimpiarFormulario()
-{
-    limpiarFormulario();
-}
-
-void RecordsPage::onGenerarDummyFila()
-{
-    ui->leId->setText(QString::number(1000 + ui->twRegistros->rowCount()));
-    ui->leNombre->setText(QStringLiteral("Nuevo Usuario"));
-    ui->leCorreo->setText(QStringLiteral("nuevo@email.com"));
-    ui->leTelefono->setText(QStringLiteral("9999-0000"));
-    ui->deFecha->setDate(QDate::currentDate());
-    ui->chkActivo->setChecked(true);
-    ui->dsbSaldo->setValue(0.0);
-    ui->pteNotas->setPlainText(QString());
-    ui->leExtra1->clear();
-    ui->leExtra2->clear();
-    ui->leExtra3->clear();
-}
-
-/* =================== Paginación (mock) =================== */
-
-void RecordsPage::onPrimero()  { m_currentPage = 1; updateStatusLabels(); }
-void RecordsPage::onAnterior() { m_currentPage = qMax(1, m_currentPage - 1); updateStatusLabels(); }
-void RecordsPage::onSiguiente(){ m_currentPage = m_currentPage + 1; updateStatusLabels(); }
-void RecordsPage::onUltimo()   { m_currentPage = m_currentPage + 1; updateStatusLabels(); }
-
-/* =================== Utilidades de formulario/tabla (legacy) =================== */
-
-void RecordsPage::limpiarFormulario()
-{
-    ui->leId->clear();
-    ui->leNombre->clear();
-    ui->leCorreo->clear();
-    ui->leTelefono->clear();
-    ui->deFecha->setDate(QDate::currentDate());
-    ui->chkActivo->setChecked(false);
-    ui->dsbSaldo->setValue(0.0);
-    ui->pteNotas->clear();
-    ui->leExtra1->clear();
-    ui->leExtra2->clear();
-    ui->leExtra3->clear();
-}
-
-void RecordsPage::cargarFormularioDesdeFila(int row)
-{
-    Q_UNUSED(row)
-    // Mantener vacío (legacy demo); el CRUD real usa diálogo dinámico
-}
-
-void RecordsPage::escribirFormularioEnFila(int row)
-{
-    Q_UNUSED(row)
-    // Mantener vacío (legacy demo)
-}
-
-int RecordsPage::agregarFilaDesdeFormulario()
-{
-    return -1; // no usado
-}
-
-/* ----------------- Búsqueda ----------------- */
+/* =================== Búsqueda =================== */
 
 bool RecordsPage::filaCoincideBusqueda(int row, const QString& term) const
 {
-    if (term.isEmpty()) return true;
-    const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
-    for (int c = 0; c < ui->twRegistros->columnCount(); ++c) {
-        if (auto* it = ui->twRegistros->item(row, c)) {
-            if (it->text().contains(term, cs)) return true;
+    if (term.trimmed().isEmpty()) return true;
+    const QString t = term.trimmed().toLower();
+    const int cols = ui->twRegistros->columnCount();
+    for (int c = 0; c < cols; ++c) {
+        if (auto *it = ui->twRegistros->item(row, c)) {
+            if (it->text().toLower().contains(t)) return true;
         }
     }
     return false;
@@ -570,133 +637,243 @@ bool RecordsPage::filaCoincideBusqueda(int row, const QString& term) const
 
 void RecordsPage::aplicarFiltroBusqueda(const QString& term)
 {
-    for (int r = 0; r < ui->twRegistros->rowCount(); ++r) {
-        const bool show = filaCoincideBusqueda(r, term);
+    const int rows = ui->twRegistros->rowCount();
+    for (int r = 0; r < rows; ++r) {
+        bool show = filaCoincideBusqueda(r, term);
         ui->twRegistros->setRowHidden(r, !show);
     }
-    updateNavState();
 }
 
-/* ----------------- Navegación visible ----------------- */
+/* =================== Diálogo CRUD (toolbar oculto) =================== */
+void RecordsPage::onInsertar() {}
+void RecordsPage::onEditar()   {}
+void RecordsPage::onEliminar() {}
+void RecordsPage::onGuardar()  {}
+void RecordsPage::onCancelar() {}
 
-QList<int> RecordsPage::visibleRows() const
+/* =================== Navegación (oculta) =================== */
+void RecordsPage::navFirst() {}
+void RecordsPage::navPrev()  {}
+void RecordsPage::navNext()  {}
+void RecordsPage::navLast()  {}
+
+void RecordsPage::updateNavState()   { emit navState(0, 0, false, false); }
+QList<int> RecordsPage::visibleRows() const { return {}; }
+int  RecordsPage::selectedVisibleIndex() const { return -1; }
+void RecordsPage::selectVisibleByIndex(int) {}
+int  RecordsPage::currentSortColumn() const { return ui->twRegistros->currentColumn(); }
+
+/* =================== “Datasheet mínimo”: ocultar controles legacy =================== */
+void RecordsPage::hideLegacyChrome()
 {
-    QList<int> v;
-    const int n = ui->twRegistros->rowCount();
-    v.reserve(n);
-    for (int r = 0; r < n; ++r)
-        if (!ui->twRegistros->isRowHidden(r)) v.push_back(r);
-    return v;
+    auto hideByObjectName = [this](const char* name){
+        if (auto *w = this->findChild<QWidget*>(name)) w->hide();
+    };
+
+    // 1) Búsqueda (line edit + X)
+    hideByObjectName("leBuscar");
+    hideByObjectName("btnLimpiarBusqueda");
+
+    // 2) Panel derecho (editor)
+    for (auto *sp : findChildren<QSplitter*>()) {
+        if (sp->count() >= 2) {
+            if (auto *right = sp->widget(1)) right->hide();
+            sp->setSizes({1, 0});
+        }
+    }
+    hideByObjectName("lblFormTitle");
+    hideByObjectName("editorRight");
+    hideByObjectName("editorPanel");
+    hideByObjectName("editorScroll");
+    hideByObjectName("frmEditor");
+    hideByObjectName("gbEditor");
+    hideByObjectName("widgetEditor");
+    hideByObjectName("btnLimpiarForm");
+    hideByObjectName("btnGenerarDummy");
+
+    // 3) Toolbar CRUD y “Ver eliminados”
+    hideByObjectName("btnInsertar");
+    hideByObjectName("btnEditar");
+    hideByObjectName("btnEliminar");
+    hideByObjectName("btnGuardar");
+    hideByObjectName("btnCancelar");
+    for (auto *cb : findChildren<QCheckBox*>()) {
+        const auto txt = cb->text().toLower();
+        if (txt.contains("eliminad")) cb->hide();
+    }
+
+    // 4) Paginación y estado inferior
+    hideByObjectName("btnPrimero");
+    hideByObjectName("btnAnterior");
+    hideByObjectName("btnSiguiente");
+    hideByObjectName("btnUltimo");
+    hideByObjectName("lblPagina");
+    hideByObjectName("lblTotal");
+    hideByObjectName("lblStatus");
+    hideByObjectName("lblEstado");
+
+    // Barrido por patrones
+    for (auto *w : findChildren<QWidget*>()) {
+        const QString obj = w->objectName().toLower();
+        if (obj.contains("status") || obj.contains("pagina") || obj.contains("total"))
+            w->hide();
+        if (obj.contains("editor"))
+            w->hide();
+    }
 }
 
-int RecordsPage::selectedVisibleIndex() const
+/* =================== Edición inline de filas existentes =================== */
+
+Record RecordsPage::rowToRecord(int row) const
 {
-    const auto vis = visibleRows();
-    const auto sel = ui->twRegistros->selectionModel()
-                         ? ui->twRegistros->selectionModel()->selectedRows()
-                         : QModelIndexList{};
-    if (sel.isEmpty()) return -1;
-    const int row = sel.first().row();
-    for (int i = 0; i < vis.size(); ++i)
-        if (vis[i] == row) return i;
-    return -1; // seleccionado está oculto o no hay
+    Record rec; rec.resize(m_schema.size());
+    for (int c = 0; c < m_schema.size(); ++c) {
+        const FieldDef& fd = m_schema[c];
+        const QString t = normType(fd.type);
+
+        if (QWidget *w = ui->twRegistros->cellWidget(row, c)) {
+            rec[c] = editorValue(w, fd.type);
+            continue;
+        }
+
+        QTableWidgetItem *it = ui->twRegistros->item(row, c);
+        const QString txt = it ? it->text() : QString();
+
+        if (t == "fecha_hora") {
+            rec[c] = QDate::fromString(txt, "yyyy-MM-dd");
+        } else if (t == "moneda" || t == "numero") {
+            rec[c] = txt.isEmpty() ? QVariant() : QVariant(txt.toDouble());
+        } else if (t == "booleano") {
+            rec[c] = false; // suele venir como cellWidget
+        } else if (t == "autonumeracion") {
+            rec[c] = txt;
+        } else { // texto / texto_largo
+            rec[c] = txt;
+        }
+    }
+    return rec;
 }
 
-void RecordsPage::selectVisibleByIndex(int visIndex)
+void RecordsPage::onItemChanged(QTableWidgetItem* it)
 {
-    const auto vis = visibleRows();
-    if (vis.isEmpty()) return;
-    // Qt6: QList::size() devuelve qsizetype → cast a int para std::clamp
-    const int ix = std::clamp(visIndex, 0, int(vis.size()) - 1);
-    const int row = vis[ix];
-    ui->twRegistros->clearSelection();
-    ui->twRegistros->selectRow(row);
-    ui->twRegistros->scrollToItem(ui->twRegistros->item(row, 0),
-                                  QAbstractItemView::PositionAtCenter);
-    updateNavState();
+    if (!it || m_tableName.isEmpty() || m_schema.isEmpty()) return;
+    if (m_isReloading || m_isCommitting) return;
+
+    const int row  = it->row();
+    const int col  = it->column();
+    const int last = ui->twRegistros->rowCount() - 1;
+
+    // Ignora la fila (New) y la columna autonumeración
+    if (row == last) return;
+    if (normType(m_schema[col].type) == "autonumeracion") return;
+
+    // Toma los valores correctamente tipados de toda la fila
+    Record r = rowToRecord(row);
+
+    // Intenta actualizar en el modelo (aquí se validan tipos, PK, y FKs)
+    QString err;
+    if (!DataModel::instance().updateRow(m_tableName, row, r, &err)) {
+        // Revertir solo la celda editada SIN disparar signals
+        QSignalBlocker block(ui->twRegistros);
+
+        const auto rows = DataModel::instance().rows(m_tableName);
+        if (row >= 0 && row < rows.size() && col < rows[row].size()) {
+            const FieldDef& fd = m_schema[col];
+            const QVariant& vv = rows[row][col];
+            if (auto *item = ui->twRegistros->item(row, col)) {
+                item->setText(formatCell(fd, vv));
+                // (opcional) marcar en rojo un instante
+                item->setBackground(QColor("#ffe0e0"));
+                QTimer::singleShot(650, this, [this,row,col](){
+                    if (auto *it2 = ui->twRegistros->item(row,col))
+                        it2->setBackground(Qt::NoBrush);
+                });
+            }
+        }
+
+        QMessageBox::warning(this, tr("No se pudo guardar"), err);
+        return;
+    }
+
+    // Éxito: limpia cualquier marca visual (por si la hubiera)
+    if (auto *okItem = ui->twRegistros->item(row, col))
+        okItem->setBackground(Qt::NoBrush);
 }
 
-void RecordsPage::updateNavState()
+
+
+
+/* =================== Slots legacy expuestos =================== */
+
+void RecordsPage::onPrimero()  { if (ui->twRegistros->rowCount() > 0) ui->twRegistros->selectRow(0); }
+void RecordsPage::onAnterior() { int r = ui->twRegistros->currentRow(); if (r > 0) ui->twRegistros->selectRow(r - 1); }
+void RecordsPage::onSiguiente(){ int r = ui->twRegistros->currentRow(); int last = ui->twRegistros->rowCount() - 1; if (r >= 0 && r < last) ui->twRegistros->selectRow(r + 1); }
+void RecordsPage::onUltimo()   { int last = ui->twRegistros->rowCount() - 1; if (last >= 0) ui->twRegistros->selectRow(last); }
+
+void RecordsPage::sortAscending()  {}
+void RecordsPage::sortDescending() {}
+void RecordsPage::clearSorting()   {}
+
+
+void RecordsPage::onLimpiarFormulario() { limpiarFormulario(); }
+void RecordsPage::onGenerarDummyFila()  {}
+
+void RecordsPage::prepareNextNewRow()
 {
-    // Obtener filas visibles y la selección actual
-    const QList<int> visibles = visibleRows();
-    int totalVisibles = visibles.size();
+    if (m_preparedNextNew) return;
+    if (ui->twRegistros->rowCount() <= 0) return;
 
-    // Índice seleccionado dentro de visibles (0-based)
-    int curIndex = selectedVisibleIndex();
+    // Guarda la celda activa
+    const int curRow = ui->twRegistros->currentRow();
+    const int curCol = ui->twRegistros->currentColumn();
 
-    // Convertir a 1-based (0 si no hay selección)
-    int cur = (curIndex >= 0 ? curIndex + 1 : 0);
+    // Última fila existente (la (New) actual)
+    const int prevRow = ui->twRegistros->rowCount() - 1;
 
-    // Calcular si se puede navegar
-    bool canPrev = (cur > 1);
-    bool canNext = (cur > 0 && cur < totalVisibles);
+    // Encontrar columna ID
+    int idCol = -1;
+    for (int c = 0; c < m_schema.size(); ++c) {
+        if (normType(m_schema[c].type) == "autonumeracion") { idCol = c; break; }
+    }
 
-    // Emitir la señal hacia ShellWindow
-    emit navState(cur, totalVisibles, canPrev, canNext);
+    // Calcular el ID de la nueva (New) como (ID de la (New) actual) + 1
+    qint64 nextIdPreset = -1;
+    if (idCol >= 0) {
+        if (auto *it = ui->twRegistros->item(prevRow, idCol)) {
+            bool ok = false;
+            const qint64 lastNewId = it->text().toLongLong(&ok);
+            if (ok) nextIdPreset = lastNewId + 1;
+        }
+    }
+
+    // Evitar señales durante la inserción
+    QSignalBlocker block(ui->twRegistros);
+
+    // Insertar nueva fila (New) con ID preasignado incremental
+    addNewRowEditors(nextIdPreset);
+
+    // Restaurar foco donde estaba el usuario
+    if (curRow >= 0 && curCol >= 0) {
+        ui->twRegistros->setCurrentCell(curRow, curCol);
+        if (QWidget *ed = ui->twRegistros->cellWidget(curRow, curCol))
+            ed->setFocus();
+    }
+
+    m_preparedNextNew = true;
 }
 
 
-/* =================== Navegación desde ShellWindow =================== */
-
-void RecordsPage::navFirst()
+void RecordsPage::onCurrentCellChanged(int currentRow, int, int previousRow, int)
 {
-    const QList<int> vis = visibleRows();
-    if (!vis.isEmpty())
-        selectVisibleByIndex(0);
-}
-
-void RecordsPage::navPrev()
-{
-    int cur = selectedVisibleIndex();
-    if (cur > 0)
-        selectVisibleByIndex(cur - 1);
-}
-
-void RecordsPage::navNext()
-{
-    int cur = selectedVisibleIndex();
-    const QList<int> vis = visibleRows();
-    if (cur >= 0 && cur < vis.size() - 1)
-        selectVisibleByIndex(cur + 1);
-}
-
-void RecordsPage::navLast()
-{
-    const QList<int> vis = visibleRows();
-    if (!vis.isEmpty())
-        selectVisibleByIndex(vis.size() - 1);
+    if (m_isReloading || m_isCommitting) return;               // guard
+    const int last = ui->twRegistros->rowCount() - 1;
+    if (previousRow >= 0 && currentRow >= 0
+        && currentRow != previousRow
+        && previousRow == last)
+    {
+        if (!m_preparedNextNew) return;    // ⟵ NO confirmar si la (New) estaba vacía
+        commitNewRow();
+    }
 }
 
 
-
-/* =================== Ordenación desde Ribbon =================== */
-
-int RecordsPage::currentSortColumn() const {
-    // preguntar directamente al header qué columna está activa
-    int col = ui->twRegistros->horizontalHeader()->sortIndicatorSection();
-    if (col >= 0)
-        return col;
-
-    // si nunca se ha ordenado, por defecto la primera
-    return 0;
-}
-
-
-void RecordsPage::sortAscending() {
-    int col = currentSortColumn();
-    ui->twRegistros->sortByColumn(col, Qt::AscendingOrder);
-}
-
-void RecordsPage::sortDescending() {
-    int col = currentSortColumn();
-    ui->twRegistros->sortByColumn(col, Qt::DescendingOrder);
-}
-
-void RecordsPage::clearSorting() {
-    ui->twRegistros->setSortingEnabled(false);
-    ui->twRegistros->setSortingEnabled(true);
-    ui->twRegistros->horizontalHeader()->setSortIndicator(-1, Qt::AscendingOrder);
-
-    reloadRows(); // vuelve a cargar en el orden natural de DataModel
-}

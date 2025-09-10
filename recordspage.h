@@ -5,6 +5,8 @@
 #include <QMetaObject>
 #include "datamodel.h"   // FieldDef / Schema / DataModel
 
+class QTableWidgetItem;
+
 QT_BEGIN_NAMESPACE
 namespace Ui { class RecordsPage; }
 QT_END_NAMESPACE
@@ -17,30 +19,25 @@ public:
     ~RecordsPage();
 
 signals:
-    // Señales listas para la integración real más adelante:
     void recordInserted(const QString& tabla);
     void recordUpdated(const QString& tabla, int row);
     void recordDeleted(const QString& tabla, const QList<int>& rows);
-
-    // Estado de navegación (posición 1-based y habilitado prev/next)
     void navState(int cur, int tot, bool canPrev, bool canNext);
 
 public slots:
-    // === Integración con TablesPage/Shell ===
-    // Recibe el nombre de la tabla y su esquema (lista de campos) y reconstruye la grilla
+    // Integración con TablesPage/Shell
     void setTableFromFieldDefs(const QString& name, const Schema& defs);
 
-    // --- Navegación (para la barra inferior del shell) ---
+    // Navegación (no visible; compat.)
     void navFirst();
     void navPrev();
     void navNext();
     void navLast();
 
-    // --- Ordenación desde Ribbon ---
+    // Ordenación (desde Ribbon)
     void sortAscending();
     void sortDescending();
     void clearSorting();
-
 
 private slots:
     // Encabezado / acciones
@@ -50,50 +47,55 @@ private slots:
     void onInsertar();
     void onEditar();
     void onEliminar();
-    void onGuardar();   // (no usado en el CRUD real; se mantienen por compat.)
-    void onCancelar();  // (no usado en el CRUD real; se mantienen por compat.)
+    void onGuardar();
+    void onCancelar();
 
     // Tabla
     void onSelectionChanged();
-    void onItemDoubleClicked();
+    void onItemDoubleClicked(QTableWidgetItem *item);
 
-    // Editor (maqueta del panel derecho)
+    // Editor legacy (oculto)
     void onLimpiarFormulario();
     void onGenerarDummyFila();
 
-    // Paginación (solo actualiza etiqueta por ahora)
+    // Paginación legacy (oculta)
     void onPrimero();
     void onAnterior();
     void onSiguiente();
     void onUltimo();
+    void onCurrentCellChanged(int currentRow, int currentCol, int previousRow, int previousCol);
+
 
 private:
     enum class Mode { Idle, Insert, Edit };
+    // Anti-reentradas / estado interno
+    bool m_isReloading  = false;
+    bool m_isCommitting = false;
 
     Ui::RecordsPage* ui = nullptr;
     Mode m_mode = Mode::Idle;
     int  m_currentPage = 1;
 
-    // === Estado de integración ===
-    QString m_tableName;              // tabla actualmente mostrada
-    Schema  m_schema;                 // esquema actual
-    QMetaObject::Connection m_rowsConn; // suscripción a DataModel::rowsChanged
+    // Estado de integración
+    QString m_tableName;
+    Schema  m_schema;
+    QMetaObject::Connection m_rowsConn;
 
-    // ---- Helpers de UI (sin estilos) ----
+    // ---- Helpers de UI ----
     void setMode(Mode m);
     void updateHeaderButtons();
     void updateStatusLabels();
 
-    // Demo legacy (se conservan para modo sandbox si no hay tabla)
+    // Demo legacy (no se usan)
     void construirColumnasDemo();
     void cargarDatosDemo();
 
-    // ---- Nuevo: carga desde DataModel ----
-    void applyDefs(const Schema& defs);   // columnas según esquema
-    void reloadRows();                    // filas desde DataModel::rows(...)
+    // Carga real desde DataModel
+    void applyDefs(const Schema& defs);
+    void reloadRows();
     QString formatCell(const FieldDef& fd, const QVariant& v) const;
 
-    // Panel maqueta legacy
+    // Panel legacy
     void limpiarFormulario();
     void cargarFormularioDesdeFila(int row);
     void escribirFormularioEnFila(int row);
@@ -103,21 +105,36 @@ private:
     bool filaCoincideBusqueda(int row, const QString& term) const;
     void aplicarFiltroBusqueda(const QString& term);
 
-    // ---- Diálogo dinámico por esquema ----
-    // Devuelve true si el usuario acepta. r es in/out.
-    bool editRecordDialog(const QString& title, const Schema& s, Record& r,
-                          bool isInsert, QString* errMsg = nullptr);
+    // Navegación visible (legacy)
+    void updateNavState();
+    QList<int> visibleRows() const;
+    int  selectedVisibleIndex() const;
+    void selectVisibleByIndex(int visIndex);
+    int  m_lastSortColumn = -1;
+    int  currentSortColumn() const;
 
-    // ---- Navegación visible ----
-    void updateNavState();                        // emite navState(...)
-    QList<int> visibleRows() const;               // índices de filas no ocultas
-    int selectedVisibleIndex() const;             // posición (0-based) dentro de visibles o -1
-    void selectVisibleByIndex(int visIndex);      // selecciona por índice visible (clamped)
+    // --- Nueva fila editable tipo Access ---
+    void addNewRowEditors(qint64 presetId = -1);
+    QWidget* makeEditorFor(const FieldDef& fd) const;       // editor por tipo
+    QVariant editorValue(QWidget* w, const QString& t) const;
+    void clearNewRowEditors();                              // limpia la fila (para próximo insert)
+    void commitNewRow();                                    // inserta en DataModel
 
-    int m_lastSortColumn = -1;
+    // Diálogo CRUD (opcional)
+    bool editRecordDialog(const QString& title,
+                          const Schema& s,
+                          Record& r,
+                          bool isInsert,
+                          QString* errMsg);
 
-    int currentSortColumn() const;
+    // --- Inline insert & edit ---
+    bool m_preparedNextNew = false;                 // ¿ya agregamos la “siguiente (New)”?
+    void prepareNextNewRow();                       // agrega otra fila (New) al empezar a escribir
+    Record rowToRecord(int row) const;              // vuelca celdas -> Record para updateRow
+    void onItemChanged(QTableWidgetItem* it);       // edición inline de items (no-booleanos)
 
+    // Modo “Datasheet mínimo”: ocultar controles legacy
+    void hideLegacyChrome();
 };
 
 #endif // RECORDSPAGE_H
