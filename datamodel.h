@@ -9,17 +9,35 @@
 #include <QStringList>
 #include <QList>
 
+// --- Relaciones (FK) ---
+enum class FkAction { Restrict, Cascade, SetNull };
+
+
+struct ForeignKey {
+    QString childTable;   // tabla hija (donde vive la FK)
+    int     childCol = -1;
+    QString parentTable;  // tabla padre (a la que apunta)
+    int     parentCol = -1;
+    FkAction onDelete = FkAction::Restrict;
+    FkAction onUpdate = FkAction::Restrict;
+};
+
 /* =========================================================
- *  Definiciones existentes (compatibles con tu UI)
+ *  Definiciones (compatibles con tu UI)
  * =======================================================*/
 struct FieldDef {
     QString name;
-    QString type;      // "Autonumeración", "Número", "Fecha/Hora", "Moneda", "Texto corto"
-    int     size = 0;
+    QString type;      // "Autonumeración","Número","Fecha/Hora","Moneda","Sí/No","Texto corto","Texto largo"
+    int     size = 0;  // Tamaño SOLO aplica a "Texto corto"
     bool    pk = false;
 
     // Propiedades (maqueta)
     QString formato;
+    // --- Autonumeración ---
+    // Subtipo: "Long Integer" o "Replication ID" (GUID). Default Long Integer
+    QString autoSubtipo = "Long Integer";
+    //New values: "Increment" o "Random" (solo Long Integer). Default Increment
+    QString autoNewValues = "Increment";
     QString mascaraEntrada;
     QString titulo;
     QString valorPredeterminado;
@@ -31,21 +49,27 @@ struct FieldDef {
 
 // Un "Schema" es la lista de campos de una tabla (en el mismo orden que se muestran).
 using Schema = QList<FieldDef>;
-
 // Una fila de datos (mismo orden/longitud que el Schema)
 using Record = QVector<QVariant>;
 
 
 /* =========================================================
  *  Núcleo de datos en memoria
- *  - Guarda esquemas y datos por tabla
- *  - Valida y convierte según el tipo (string de FieldDef)
- *  - Autonumera si el PK es "Autonumeración"
- *  - Emite señales para sincronizar la UI
  * =======================================================*/
 class DataModel : public QObject {
     Q_OBJECT
 public:
+
+    // API pública para relaciones
+    bool addRelationship(const QString& childTable, const QString& childColName,
+                         const QString& parentTable, const QString& parentColName,
+                         FkAction onDelete = FkAction::Restrict,
+                         FkAction onUpdate = FkAction::Restrict,
+                         QString* err = nullptr);
+
+    QVector<ForeignKey> relationshipsFor(const QString& table) const; // como hija
+    QVector<ForeignKey> incomingRelationshipsTo(const QString& table) const;
+
     static DataModel& instance();
 
     /* ---------- Esquema ---------- */
@@ -67,10 +91,11 @@ public:
 
     /* ---------- Utilidades ---------- */
     bool validate(const Schema& s, Record& r, QString* err = nullptr) const; // convierte tipos in-place
-    int  pkColumn(const Schema& s) const;           // -1 si no hay
-    QVariant nextAutoNumber(const QString& name) const; // siguiente autonum para esa tabla
-    QString tableDescription(const QString& table) const;
+    int  pkColumn(const Schema& s) const;                 // -1 si no hay
+    QVariant nextAutoNumber(const QString& name) const;   // siguiente autonum
+    QString tableDescription(const QString& table) const; // descripción de tabla
     void    setTableDescription(const QString& table, const QString& desc);
+
 signals:
     void tableCreated(const QString& name);
     void tableDropped(const QString& name);
@@ -89,11 +114,18 @@ private:
     bool ensureUniquePk(const QString& name, int pkCol, const QVariant& pkVal,
                         int ignoreRow, QString* err) const;
 
+    // Por tabla hija
+    QHash<QString, QVector<ForeignKey>> m_fksByChild;
+    // Helpers
+    int columnIndex(const Schema& s, const QString& name) const;
+    bool checkFksOnWrite(const QString& childTable, const Record& r, QString* err) const;
+    bool handleParentDeletes(const QString& parentTable, const QList<int>& parentRows,
+                             QString* err);
+
 private:
     QMap<QString, Schema>          m_schemas; // tabla -> schema
     QMap<QString, QVector<Record>> m_data;    // tabla -> filas
-    QMap<QString, QString> m_tableDescriptions; // nombre -> descripción
-
+    QMap<QString, QString>         m_tableDescriptions; // nombre -> descripción
 };
 
 #endif // DATAMODEL_H

@@ -21,9 +21,15 @@
 #include <QAction>
 #include <QMetaObject>
 #include <QMessageBox>
+#include <QInputDialog>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPainterPath>
+#include <QDialog>
+#include <QFormLayout>
+#include <QComboBox>
+#include <QDialogButtonBox>
+#include <QMessageBox>
 
 
 // Tamaños base
@@ -51,6 +57,60 @@ static QWidget* vSep(int h = 64) {
     return sep;
 }
 
+// Añade en shellwindow.cpp (ámbito anónimo)
+static bool showAddRelationDialog(QWidget* parent) {
+    auto &dm = DataModel::instance();
+
+    QDialog dlg(parent);
+    dlg.setWindowTitle("Nueva relación (FK)");
+    auto *form = new QFormLayout(&dlg);
+
+    QComboBox cbChildTable, cbChildCol, cbParentTable, cbParentCol, cbOnDelete, cbOnUpdate;
+
+    const QStringList tables = dm.tables();
+    cbChildTable.addItems(tables);
+    cbParentTable.addItems(tables);
+
+    auto refillCols = [&](QComboBox& tableCb, QComboBox& colCb){
+        colCb.clear();
+        const Schema s = dm.schema(tableCb.currentText());
+        for (const auto& fd : s) colCb.addItem(fd.name);
+    };
+    refillCols(cbChildTable, cbChildCol);
+    refillCols(cbParentTable, cbParentCol);
+    QObject::connect(&cbChildTable, &QComboBox::currentTextChanged, [&](const QString&){ refillCols(cbChildTable, cbChildCol); });
+    QObject::connect(&cbParentTable, &QComboBox::currentTextChanged, [&](const QString&){ refillCols(cbParentTable, cbParentCol); });
+
+    cbOnDelete.addItems({"Restrict","Cascade","SetNull"});
+    cbOnUpdate.addItems({"Restrict","Cascade","SetNull"});
+
+    form->addRow("Tabla hija:",    &cbChildTable);
+    form->addRow("Columna hija:",  &cbChildCol);
+    form->addRow("Tabla padre:",   &cbParentTable);
+    form->addRow("Columna padre:", &cbParentCol);
+    form->addRow("On Delete:",     &cbOnDelete);
+    form->addRow("On Update:",     &cbOnUpdate);
+
+    QDialogButtonBox bb(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    QObject::connect(&bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(&bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addRow(&bb);
+
+    if (dlg.exec() != QDialog::Accepted) return false;
+
+    QString err;
+    auto del = static_cast<FkAction>(cbOnDelete.currentIndex());  // orden: Restrict, Cascade, SetNull
+    auto upd = static_cast<FkAction>(cbOnUpdate.currentIndex());
+    if (!dm.addRelationship(cbChildTable.currentText(), cbChildCol.currentText(),
+                            cbParentTable.currentText(), cbParentCol.currentText(),
+                            del, upd, &err)) {
+        QMessageBox::warning(parent, "Relación", err);
+        return false;
+    }
+    QMessageBox::information(parent, "Relación", "Relación creada.");
+    return true;
+}
+
 // --- Panel izquierdo tipo Access (no usado directamente, helper por si se necesita) ---
 static QWidget* buildLeftPanel(int width, int height) {
     auto *panel = new QWidget;
@@ -67,6 +127,7 @@ static QWidget* buildLeftPanel(int width, int height) {
     hdr->setStyleSheet("background:#9f3639; color:white; font-weight:bold; font-size:20px; padding:6px 8px;");
 
     auto *search = new QLineEdit;
+    search->setFocusPolicy(Qt::ClickFocus);
     search->setPlaceholderText("Search");
     search->setFixedHeight(26);
     search->setClearButtonEnabled(true);
@@ -148,10 +209,13 @@ static QWidget* buildRecordNavigator(int width, int height, RecordsPage* records
     });
 
     auto *search = new QLineEdit;
+    search->setFocusPolicy(Qt::ClickFocus);
     search->setObjectName("navSearch");
     search->setPlaceholderText("Search");
     search->setFixedWidth(240);
     search->setStyleSheet("background:white; border:1px solid #c8c8c8; padding:2px 6px;");
+    search->setFocusPolicy(Qt::ClickFocus);
+
 
     // Conexiones a RecordsPage (usamos invokeMethod con fallback a paginación mock)
     QObject::connect(firstBtn, &QToolButton::clicked, recordsPage, [recordsPage]{
@@ -494,6 +558,7 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     hdr->setStyleSheet("background:#9f3639; color:white; font-weight:bold; font-size:20px; padding:6px 8px;");
 
     auto *search = new QLineEdit;
+    search->setFocusPolicy(Qt::ClickFocus);
     search->setPlaceholderText("Search");
     search->setFixedHeight(26);
     search->setClearButtonEnabled(true);
@@ -544,18 +609,12 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         layout->addWidget(lbl);
         layout->addStretch();
         return page;
-    };
-
-    stack->addWidget(tablesPage);            // index 0 (Design)
+    };stack->addWidget(tablesPage);            // index 0 (Design)
     stack->addWidget(recordsPage);           // index 1 (Datasheet)
     auto *queriesPage   = makePage("Consultas (mock)");
-    auto *relationsPage = new RelationsMockWidget;   // <--- aquí usamos el widget que dibuja
-
-    stack->addWidget(tablesPage);            // index 0
-    stack->addWidget(recordsPage);           // index 1
+    auto *relationsPage = new RelationsMockWidget;   // relaciones (mock)
     stack->addWidget(queriesPage);           // index 2
     stack->addWidget(relationsPage);         // index 3
-
 
     auto *navigator = buildRecordNavigator(kRightW, kBottomReserveH, recordsPage);
     rightV->addWidget(stack);
@@ -588,11 +647,11 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     ribbonStack->setCurrentIndex(0);
 
     // ====== Conexiones TablesPage → RecordsPage ======
-    connect(tablesPage, &TablesPage::tableSelected, this,
-            [=](const QString& name){
-                recordsPage->setTableFromFieldDefs(name, tablesPage->schemaFor(name));
-                stack->setCurrentWidget(recordsPage); // ir a Datasheet
-            });
+    connect(tablesPage, &TablesPage::tableSelected, this, [=](const QString& name){
+        // Sincroniza RecordsPage, pero NO cambiamos de vista
+        recordsPage->setTableFromFieldDefs(name, tablesPage->schemaFor(name));
+        // stack->setCurrentWidget(tablesPage); // mantener Design
+    });
 
     connect(tablesPage, &TablesPage::schemaChanged, this,
             [=](const QString& name, const Schema& s){
@@ -661,8 +720,8 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         const auto btns = dbRibbon->findChildren<QToolButton*>();
         for (auto *b : btns) {
             if (b->text() == "Relationships") {
-                connect(b, &QToolButton::clicked, this, [=]{
-                    stack->setCurrentWidget(relationsPage);
+                connect(b, &QToolButton::clicked, this, [this]{
+                    showAddRelationDialog(this);
                 });
             }
         }
@@ -769,12 +828,48 @@ QWidget* ShellWindow::buildCreateRibbon() {
     const auto btnsCreate = wrap->findChildren<QToolButton*>();
     for (auto *b : btnsCreate) {
         const QString t = b->text();
-        if (t == "Table" || t == "Table Design") {
+
+        if (t == "Table") {
+            connect(b, &QToolButton::clicked, this, [this]{
+                bool ok=false;
+                const QString name = QInputDialog::getText(this, tr("Nueva tabla"),
+                                                           tr("Nombre de la nueva tabla:"),
+                                                           QLineEdit::Normal, "NuevaTabla", &ok);
+                if (!ok || name.trimmed().isEmpty()) return;
+                QString err;
+                Schema s;
+                {
+                    FieldDef f;
+                    f.name = "ID";
+                    f.type = "Autonumeración";
+                    f.pk   = true;
+                    f.autoSubtipo  = "Long Integer";
+                    f.autoNewValues = "Increment";
+                    f.formato = "General Number";
+
+                    f.requerido = true;
+                    f.indexado  = "Sí (sin duplicados)";
+                    s.append(f);
+                }
+
+                if (!DataModel::instance().createTable(name.trimmed(), s, &err)) {
+                    QMessageBox::warning(this, tr("Crear tabla"), err);
+                    return;
+                }
+
+                // Mantenerse en Design view (opcionalmente fuerza el stack a Design)
+                auto stacks = this->findChildren<QStackedWidget*>();
+                if (!stacks.isEmpty()) stacks.first()->setCurrentIndex(0);
+            });
+
+
+        } else if (t == "Table Design") {
             connect(b, &QToolButton::clicked, this, [this, t]{
                 QMessageBox::information(this, "Create",
                                          QString("Placeholder: %1 (abriría diseñador de tablas).").arg(t));
             });
         } else if (t == "Query Wizard" || t == "Query Design") {
+
             connect(b, &QToolButton::clicked, this, [this, t]{
                 QMessageBox::information(this, "Create – Queries",
                                          QString("Placeholder: %1 (página Consultas – mock).").arg(t));
