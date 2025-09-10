@@ -12,6 +12,7 @@ public:
     explicit ShellWindow(QWidget* parent=nullptr);
 protected:
     void showEvent(QShowEvent* e) override;
+    void closeEvent(QCloseEvent* e) override;
 private:
     // pestañas superiores (Home, Create, DB Tools)
     QToolButton* homeBtn     = nullptr;

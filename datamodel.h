@@ -60,6 +60,9 @@ class DataModel : public QObject {
     Q_OBJECT
 public:
 
+    bool loadFromJson(const QString& file, QString* err = nullptr);
+    bool saveToJson(const QString& file, QString* err = nullptr) const;
+
     // API pública para relaciones
     bool addRelationship(const QString& childTable, const QString& childColName,
                          const QString& parentTable, const QString& parentColName,

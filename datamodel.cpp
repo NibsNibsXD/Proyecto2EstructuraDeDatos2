@@ -9,6 +9,14 @@
 #include <QUuid>
 #include <QRandomGenerator>
 #include <climits>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
 
 /* ====================== Singleton ====================== */
 
@@ -557,6 +565,225 @@ bool DataModel::handleParentDeletes(const QString& parentTable, const QList<int>
             }
         }
     }
+    return true;
+}
+
+
+// --- Helpers para persistencia ---
+static inline QString fkActionToStr(FkAction a) {
+    switch (a) {
+    case FkAction::Restrict: return "Restrict";
+    case FkAction::Cascade:  return "Cascade";
+    case FkAction::SetNull:  return "SetNull";
+    }
+    return "Restrict";
+}
+static inline FkAction fkActionFromStr(QString s) {
+    s = s.trimmed().toLower();
+    if (s == "cascade")  return FkAction::Cascade;
+    if (s == "setnull")  return FkAction::SetNull;
+    return FkAction::Restrict;
+}
+
+// Convertir un QVariant a JSON según el tipo lógico de la columna
+static QJsonValue cellToJson(const FieldDef& col, const QVariant& v) {
+    if (!v.isValid() || v.isNull()) return QJsonValue(); // null
+    const QString t = normType(col.type);
+    if (t == "fecha_hora") {
+        const QDate d = v.canConvert<QDate>() ? v.toDate() : QDate::fromString(v.toString(), "yyyy-MM-dd");
+        return d.isValid() ? QJsonValue(d.toString("yyyy-MM-dd")) : QJsonValue();
+    }
+    if (t == "booleano")       return QJsonValue(v.toBool());
+    if (t == "moneda")         return QJsonValue(v.toDouble());
+    if (t == "numero")         return QJsonValue(static_cast<qint64>(v.toLongLong()));
+    if (t == "autonumeracion") {
+        if (col.autoSubtipo.trimmed().toLower().startsWith("replication"))
+            return QJsonValue(v.toString());                          // GUID
+        return QJsonValue(static_cast<qint64>(v.toLongLong()));       // Long Integer
+    }
+    // texto corto/largo
+    return QJsonValue(v.toString());
+}
+
+// Inversa: JSON -> QVariant usando el esquema
+static QVariant jsonToCell(const FieldDef& col, const QJsonValue& j) {
+    if (j.isUndefined() || j.isNull()) return QVariant();
+    const QString t = normType(col.type);
+    if (t == "fecha_hora")    return QDate::fromString(j.toString(), "yyyy-MM-dd");
+    if (t == "booleano")      return j.toBool();
+    if (t == "moneda")        return j.toDouble();
+    if (t == "numero")        return static_cast<qint64>(j.toDouble());
+    if (t == "autonumeracion") {
+        if (col.autoSubtipo.trimmed().toLower().startsWith("replication"))
+            return j.toString();
+        return static_cast<qint64>(j.toDouble());
+    }
+    return j.toString();
+}
+
+bool DataModel::saveToJson(const QString& path, QString* err) const {
+    QJsonObject root;
+    root["version"] = 1;
+
+    // Tablas
+    QJsonArray jt;
+    for (auto it = m_schemas.constBegin(); it != m_schemas.constEnd(); ++it) {
+        const QString table = it.key();
+        const Schema  s     = it.value();
+
+        QJsonObject tobj;
+        tobj["name"]        = table;
+        tobj["description"] = m_tableDescriptions.value(table);
+
+        // Esquema
+        QJsonArray js;
+        for (const auto& c : s) {
+            QJsonObject jc;
+            jc["name"]               = c.name;
+            jc["type"]               = c.type;
+            jc["size"]               = c.size;
+            jc["pk"]                 = c.pk;
+            jc["formato"]            = c.formato;
+            jc["autoSubtipo"]        = c.autoSubtipo;
+            jc["autoNewValues"]      = c.autoNewValues;
+            jc["mascaraEntrada"]     = c.mascaraEntrada;
+            jc["titulo"]             = c.titulo;
+            jc["valorPredeterminado"]= c.valorPredeterminado;
+            jc["reglaValidacion"]    = c.reglaValidacion;
+            jc["textoValidacion"]    = c.textoValidacion;
+            jc["requerido"]          = c.requerido;
+            jc["indexado"]           = c.indexado;
+            js.append(jc);
+        }
+        tobj["schema"] = js;
+
+        // Filas
+        QJsonArray jrows;
+        const auto& vec = m_data.value(table);
+        for (const auto& r : vec) {
+            QJsonArray jrow;
+            for (int i = 0; i < s.size(); ++i) {
+                const QVariant v = (i < r.size()) ? r[i] : QVariant();
+                jrow.append(cellToJson(s[i], v));
+            }
+            jrows.append(jrow);
+        }
+        tobj["rows"] = jrows;
+
+        jt.append(tobj);
+    }
+    root["tables"] = jt;
+
+    // Relaciones
+    QJsonArray jrels;
+    for (auto it = m_fksByChild.constBegin(); it != m_fksByChild.constEnd(); ++it) {
+        for (const auto& fk : it.value()) {
+            const Schema cs = m_schemas.value(fk.childTable);
+            const Schema ps = m_schemas.value(fk.parentTable);
+            QJsonObject jr;
+            jr["childTable"]      = fk.childTable;
+            jr["childColName"]    = (fk.childCol  >=0 && fk.childCol  < cs.size()) ? cs[fk.childCol].name   : "";
+            jr["parentTable"]     = fk.parentTable;
+            jr["parentColName"]   = (fk.parentCol >=0 && fk.parentCol < ps.size()) ? ps[fk.parentCol].name  : "";
+            jr["onDelete"]        = fkActionToStr(fk.onDelete);
+            jr["onUpdate"]        = fkActionToStr(fk.onUpdate);
+            jrels.append(jr);
+        }
+    }
+    root["relationships"] = jrels;
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly)) {
+        if (err) *err = tr("No se puede escribir %1").arg(path);
+        return false;
+    }
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    return true;
+}
+
+bool DataModel::loadFromJson(const QString& path, QString* err) {
+    QFile f(path);
+    if (!f.exists()) return true; // nada que cargar
+    if (!f.open(QIODevice::ReadOnly)) {
+        if (err) *err = tr("No se puede abrir %1").arg(path);
+        return false;
+    }
+    QJsonParseError pe;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &pe);
+    if (pe.error != QJsonParseError::NoError) {
+        if (err) *err = tr("JSON inválido: %1").arg(pe.errorString());
+        return false;
+    }
+    const QJsonObject root = doc.object();
+
+    // Limpia y reconstruye
+    m_schemas.clear();
+    m_data.clear();
+    m_tableDescriptions.clear();
+    m_fksByChild.clear();
+
+    // Tablas
+    for (const auto& vtab : root.value("tables").toArray()) {
+        const QJsonObject tobj = vtab.toObject();
+        const QString name = tobj.value("name").toString().trimmed();
+        if (name.isEmpty()) continue;
+
+        // esquema
+        Schema s;
+        for (const auto& vcol : tobj.value("schema").toArray()) {
+            const QJsonObject jc = vcol.toObject();
+            FieldDef c;
+            c.name                = jc.value("name").toString();
+            c.type                = jc.value("type").toString();
+            c.size                = jc.value("size").toInt();
+            c.pk                  = jc.value("pk").toBool();
+            c.formato             = jc.value("formato").toString();
+            c.autoSubtipo         = jc.value("autoSubtipo").toString();
+            c.autoNewValues       = jc.value("autoNewValues").toString();
+            c.mascaraEntrada      = jc.value("mascaraEntrada").toString();
+            c.titulo              = jc.value("titulo").toString();
+            c.valorPredeterminado = jc.value("valorPredeterminado").toString();
+            c.reglaValidacion     = jc.value("reglaValidacion").toString();
+            c.textoValidacion     = jc.value("textoValidacion").toString();
+            c.requerido           = jc.value("requerido").toBool();
+            c.indexado            = jc.value("indexado").toString();
+            s.append(c);
+        }
+
+        m_schemas.insert(name, s);
+        m_data.insert(name, {});
+        m_tableDescriptions.insert(name, tobj.value("description").toString());
+
+        // filas
+        const QJsonArray jrows = tobj.value("rows").toArray();
+        auto& vec = m_data[name];
+        for (const auto& vrow : jrows) {
+            const QJsonArray ja = vrow.toArray();
+            Record r(s.size());
+            for (int i = 0; i < s.size(); ++i) {
+                const QJsonValue jv = (i < ja.size() ? ja.at(i) : QJsonValue());
+                r[i] = jsonToCell(s[i], jv);
+            }
+            QString verr;
+            validate(s, r, &verr);  // normaliza; si algo no convierte, queda null
+            vec.push_back(r);
+        }
+
+    }
+
+    // Relaciones (usa la API pública para respetar validaciones)
+    for (const auto& vr : root.value("relationships").toArray()) {
+        const QJsonObject jr = vr.toObject();
+        const QString ctab = jr.value("childTable").toString();
+        const QString ptab = jr.value("parentTable").toString();
+        const QString ccol = jr.value("childColName").toString();
+        const QString pcol = jr.value("parentColName").toString();
+        const FkAction del = fkActionFromStr(jr.value("onDelete").toString());
+        const FkAction upd = fkActionFromStr(jr.value("onUpdate").toString());
+        QString dummy;
+        addRelationship(ctab, ccol, ptab, pcol, del, upd, &dummy); // reconstituye
+    }
+
     return true;
 }
 
