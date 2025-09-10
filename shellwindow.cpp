@@ -30,6 +30,8 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QMessageBox>
+#include <QCloseEvent>
+
 
 
 // Tamaños base
@@ -47,6 +49,7 @@ static constexpr int kRightW = kWinW - kLeftW;                        // 1140
 // Alturas en la derecha
 static constexpr int kBottomReserveH = 36;                            // reserva inferior derecha
 static constexpr int kStackH = kContentH - kBottomReserveH;          // 574
+
 
 static QWidget* vSep(int h = 64) {
     auto *sep = new QFrame;
@@ -467,6 +470,9 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("MiniAccess — Shell");
     resize(kWinW, kWinH);
 
+    QString err;
+    DataModel::instance().loadFromJson("miniaccess.json", &err);
+
     // =============== Barra superior con iconos ===============
     auto *topBar = new QWidget;
     topBar->setFixedHeight(kTopH);
@@ -761,6 +767,12 @@ void ShellWindow::showEvent(QShowEvent* e) {
     }
 }
 
+void ShellWindow::closeEvent(QCloseEvent* e) {
+    QString err;
+    DataModel::instance().saveToJson("miniaccess.json", &err);
+    QMainWindow::closeEvent(e);
+}
+
 // ------------------ PÁGINAS DEL RIBBON ------------------
 
 QWidget* ShellWindow::buildHomeRibbon() {
@@ -910,8 +922,9 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
             });
         } else if (t == "Relationships") {
             connect(b, &QToolButton::clicked, this, [this]{
-
+                showAddRelationDialog(this);  // ← abre el diálogo y registra la FK
             });
+
         } else if (t == "Avail List") {
             connect(b, &QToolButton::clicked, this, [this]{
                 QMessageBox::information(this, "Database Tools",
