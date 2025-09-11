@@ -28,8 +28,34 @@
 #include <QSet>
 #include <QDebug>
 #include <QStyledItemDelegate>
+#include <QLocale>
+#include <QRegularExpression>
 
+static QString cleanNumericText(QString s) {
+    s = s.trimmed();
+    // quita símbolos típicos de moneda y espacios duros
+    s.remove(QChar::Nbsp);
+    s.remove(QRegularExpression("[\\s\\p{Sc}]")); // quita espacios y símbolos de moneda
+    // deja solo dígitos, punto, coma y signo
+    s = s.remove(QRegularExpression("[^0-9,\\.-]"));
+    // si hay ambos (coma y punto), asume coma = miles → elimínala
+    if (s.contains(',') && s.contains('.')) s.remove(',');
+    // si solo hay coma, trátala como decimal
+    else if (s.contains(',') && !s.contains('.')) s.replace(',', '.');
+    return s;
+}
 
+// Helpers locales (si los usas aquí)
+static int parseDecPlaces(const QString& fmt) {
+    QRegularExpression rx("\\bdp=(\\d)\\b");
+    auto m = rx.match(fmt);
+    int dp = m.hasMatch() ? m.captured(1).toInt() : 2;
+    return std::clamp(dp, 0, 4);
+}
+static QString baseFormatKey(const QString& fmt) {
+    int i = fmt.indexOf("|dp=");
+    return (i >= 0) ? fmt.left(i).trimmed() : fmt.trimmed();
+}
 
 
 // ---- helper de tipo (texto -> etiqueta estable) ----
@@ -162,10 +188,39 @@ QString RecordsPage::formatCell(const FieldDef& fd, const QVariant& v) const
 {
     if (!v.isValid() || v.isNull()) return QString();
     const QString t = normType(fd.type);
-    if (t == "fecha_hora") return v.toDate().toString("yyyy-MM-dd");
-    if (t == "moneda")     return QString::number(v.toDouble(), 'f', 2);
-    return v.toString(); // número/auto/texto
+
+    if (t == "fecha_hora")
+        return v.toDate().toString("yyyy-MM-dd");
+
+    if (t == "numero") {
+        const QString sz = fd.autoSubtipo.trimmed().toLower();
+        const bool isInt = sz.contains("byte") || sz.contains("entero") ||
+                           sz.contains("integer") || sz.contains("long");
+        if (isInt) {
+            return QString::number(v.toLongLong());
+        } else {
+            const int dp = parseDecPlaces(fd.formato);   // 0..4
+            return QString::number(v.toDouble(), 'f', dp);
+        }
+    }
+
+    if (t == "moneda") {
+        const int dp = parseDecPlaces(fd.formato);
+        const QString base = baseFormatKey(fd.formato).toUpper();
+
+        QString sym;
+        if (base.startsWith("LPS") || base.startsWith("HNL") || base.startsWith("L ")) sym = "L ";
+        else if (base.startsWith("USD") || base.startsWith("$"))                      sym = "$";
+        else if (base.startsWith("EUR") || base.startsWith("€"))                      sym = "€";
+
+        const QLocale loc = QLocale::system();
+        return sym + loc.toString(v.toDouble(), 'f', dp);
+    }
+
+    // Fallback seguro para texto/autonumeración/otros
+    return v.toString();
 }
+
 
 void RecordsPage::reloadRows()
 {
@@ -742,11 +797,14 @@ Record RecordsPage::rowToRecord(int row) const
         if (t == "fecha_hora") {
             rec[c] = QDate::fromString(txt, "yyyy-MM-dd");
         } else if (t == "moneda" || t == "numero") {
-            rec[c] = txt.isEmpty() ? QVariant() : QVariant(txt.toDouble());
+            const QString norm = cleanNumericText(txt);
+            bool ok = false; double d = norm.toDouble(&ok);
+            rec[c] = (ok ? QVariant(d) : QVariant());
         } else if (t == "booleano") {
             rec[c] = false; // suele venir como cellWidget
         } else if (t == "autonumeracion") {
             rec[c] = txt;
+
         } else { // texto / texto_largo
             rec[c] = txt;
         }
@@ -763,26 +821,24 @@ void RecordsPage::onItemChanged(QTableWidgetItem* it)
     const int col  = it->column();
     const int last = ui->twRegistros->rowCount() - 1;
 
-    // Ignora la fila (New) y la columna autonumeración
     if (row == last) return;
     if (normType(m_schema[col].type) == "autonumeracion") return;
 
-    // Toma los valores correctamente tipados de toda la fila
+    // Evita reentradas mientras actualizas
+    m_isCommitting = true;
+    QSignalBlocker guard(ui->twRegistros);
+
     Record r = rowToRecord(row);
 
-    // Intenta actualizar en el modelo (aquí se validan tipos, PK, y FKs)
     QString err;
     if (!DataModel::instance().updateRow(m_tableName, row, r, &err)) {
-        // Revertir solo la celda editada SIN disparar signals
-        QSignalBlocker block(ui->twRegistros);
-
+        // restaurar solo la celda editada
         const auto rows = DataModel::instance().rows(m_tableName);
         if (row >= 0 && row < rows.size() && col < rows[row].size()) {
             const FieldDef& fd = m_schema[col];
             const QVariant& vv = rows[row][col];
             if (auto *item = ui->twRegistros->item(row, col)) {
                 item->setText(formatCell(fd, vv));
-                // (opcional) marcar en rojo un instante
                 item->setBackground(QColor("#ffe0e0"));
                 QTimer::singleShot(650, this, [this,row,col](){
                     if (auto *it2 = ui->twRegistros->item(row,col))
@@ -790,14 +846,13 @@ void RecordsPage::onItemChanged(QTableWidgetItem* it)
                 });
             }
         }
-
         QMessageBox::warning(this, tr("No se pudo guardar"), err);
-        return;
+    } else {
+        if (auto *okItem = ui->twRegistros->item(row, col))
+            okItem->setBackground(Qt::NoBrush);
     }
 
-    // Éxito: limpia cualquier marca visual (por si la hubiera)
-    if (auto *okItem = ui->twRegistros->item(row, col))
-        okItem->setBackground(Qt::NoBrush);
+    m_isCommitting = false;
 }
 
 

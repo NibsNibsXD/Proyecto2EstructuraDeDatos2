@@ -16,6 +16,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <cmath>
 #include <QJsonArray>
 
 /* ====================== Singleton ====================== */
@@ -139,10 +140,28 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
     }
 
     if (t == "numero") {
-        bool ok = false; qlonglong iv = v.toLongLong(&ok);
-        if (!ok) { if (err) *err = tr("El campo \"%1\" debe ser número entero.").arg(col.name); return false; }
-        v = static_cast<qint64>(iv);
-        return true;
+        const QString sz = col.autoSubtipo.trimmed().toLower();
+        const bool isInt =
+            sz.contains("byte") || sz.contains("entero") || sz.contains("integer") || sz.contains("long");
+
+        if (isInt) {
+            bool okD = false;
+            const double d = v.toDouble(&okD);
+            if (!okD) { if (err) *err = tr("El campo \"%1\" debe ser entero.").arg(col.name); return false; }
+            // Rechaza fracciones: 12.5 no vale para entero
+            if (std::fabs(d - std::llround(d)) > 1e-9) {
+                if (err) *err = tr("El campo \"%1\" debe ser entero.").arg(col.name);
+                return false;
+            }
+            v = static_cast<qint64>(std::llround(d));
+            return true;
+        } else {
+            bool ok = false;
+            const double d = v.toDouble(&ok);
+            if (!ok) { if (err) *err = tr("El campo \"%1\" debe ser numérico.").arg(col.name); return false; }
+            v = d;                    // guarda como double
+            return true;
+        }
     }
 
     if (t == "moneda") {

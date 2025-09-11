@@ -23,6 +23,18 @@
 
 
 /* ===== Helpers ===== */
+
+static int parseDecPlaces(const QString& fmt) {
+    QRegularExpression rx("\\bdp=(\\d)\\b");
+    auto m = rx.match(fmt);
+    int dp = m.hasMatch() ? m.captured(1).toInt() : 2;
+    return std::clamp(dp, 0, 4);
+}
+static QString baseFormatKey(const QString& fmt) {
+    const int i = fmt.indexOf("|dp=");
+    return (i >= 0) ? fmt.left(i).trimmed() : fmt.trimmed();
+}
+
 static QStringList kTypes() {
     // Orden parecido a Access
     return {"Autonumeración","Número","Fecha","Moneda","Sí/No","Texto corto","Texto largo"};
@@ -557,10 +569,13 @@ void TablesPage::onFieldSelectionChanged() {
 }
 
 void TablesPage::loadFieldPropsToUi(const FieldDef &fd) {
-    QSignalBlocker b1(propFormato), b3(propTitulo),
+    QSignalBlocker b1(propFormato), b2(propDecimalPlaces),  b3(propTitulo),
         b4(propValorPred), b7(propIndexado), b8(propRequerido);
-    propFormato->setCurrentText(fd.formato);
-    propAutoFormato->setCurrentText(fd.autoSubtipo);
+
+    // NUEVO: usa la clave “limpia” y saca los decimales del sufijo |dp=X
+    const QString rawFmt = fd.formato;
+    propFormato->setCurrentText(baseFormatKey(rawFmt));
+    propDecimalPlaces->setCurrentText(QString::number(parseDecPlaces(rawFmt)));    propAutoFormato->setCurrentText(fd.autoSubtipo);
     propAutoFormato->setCurrentText(fd.autoSubtipo.isEmpty() ? "Long Integer" : fd.autoSubtipo);
     propAutoNewValues->setCurrentText(fd.autoNewValues.isEmpty() ? "Increment" : fd.autoNewValues);
 
@@ -611,10 +626,19 @@ void TablesPage::loadFieldPropsToUi(const FieldDef &fd) {
 }
 
 void TablesPage::pullPropsFromUi(FieldDef &fd) {
-    // Guarda la CLAVE del formato (userData) si existe; si no, el texto visible
     {
         const QVariant key = propFormato->currentData();
-        fd.formato = key.isValid() ? key.toString() : propFormato->currentText();
+        QString base = key.isValid() ? key.toString() : propFormato->currentText();
+        int dp = std::clamp(propDecimalPlaces->currentText().toInt(), 0, 4);
+
+        // Si el subtipo del número es entero, fuerza dp=0
+        const QString nt = normType(fd.type);
+        const QString sz = propAutoFormato->currentText().trimmed().toLower();
+        const bool isInt = (nt == "numero") &&
+                           (sz.contains("byte") || sz.contains("entero") || sz.contains("integer") || sz.contains("long"));
+        if (isInt) dp = 0;
+
+        fd.formato = base + QString("|dp=%1").arg(dp);
     }
 
     // Solo tiene sentido en Autonumeración, pero guardar no hace daño
@@ -645,65 +669,47 @@ void TablesPage::pullPropsFromUi(FieldDef &fd) {
 // #include <QTimer>
 void TablesPage::onPropertyChanged() {
     if (m_updatingUi) return;
+
     const int row = (m_activeRow >= 0 ? m_activeRow : fieldsTable->currentRow());
     if (row < 0 || row >= m_currentSchema.size()) return;
 
-    // Actualiza el modelo con lo que hay en el panel
-    Schema s = m_currentSchema;
-    pullPropsFromUi(s[row]);
-
-    // ¿Quién disparó la señal?
+    // ¿Quién disparó?
     QObject* src = sender();
-
     enum class Src {None, Formato, DecPlaces, AutoFormato, ValorPred, TextSize};
     Src who = Src::None;
-
-    // map directo por sender()
     if      (src == propFormato)         who = Src::Formato;
     else if (src == propDecimalPlaces)   who = Src::DecPlaces;
     else if (src == propAutoFormato)     who = Src::AutoFormato;
     else if (src == propValorPred)       who = Src::ValorPred;
     else if (src == propTextSize)        who = Src::TextSize;
 
-    // fallback: si el foco estaba en el popup del combo, deduce el dueño
-    QWidget* focused = QApplication::focusWidget();
-    auto belongsTo = [](QWidget* w, QWidget* possibleParent){
-        for (QWidget* p = w; p; p = p->parentWidget())
-            if (p == possibleParent) return true;
-        return false;
-    };
-    if (who == Src::None && focused) {
-        if      (belongsTo(focused, propFormato))       who = Src::Formato;
-        else if (belongsTo(focused, propDecimalPlaces)) who = Src::DecPlaces;
-        else if (belongsTo(focused, propAutoFormato))   who = Src::AutoFormato;
+    // Construye nuevo schema desde la UI
+    Schema s = m_currentSchema;
+    pullPropsFromUi(s[row]);
+
+    // 🔒 Bloquea reentradas durante TODO el refresh
+    m_updatingUi = true;
+    QScopeGuard done{[&]{ m_updatingUi = false; }};
+
+    // (opcional) bloquea señales de combos mientras refrescas
+    QSignalBlocker b1(propFormato);
+    QSignalBlocker b2(propDecimalPlaces);
+    QSignalBlocker b3(propAutoFormato);
+
+    // Refresca sin reentrar
+    applySchemaAndRefresh(s, row);
+
+    // Restaura el foco al control que originó el cambio
+    switch (who) {
+    case Src::Formato:       if (propFormato)       propFormato->setFocus();       break;
+    case Src::DecPlaces:     if (propDecimalPlaces) propDecimalPlaces->setFocus(); break;
+    case Src::AutoFormato:   if (propAutoFormato)   propAutoFormato->setFocus();   break;
+    case Src::ValorPred:     if (propValorPred)     propValorPred->setFocus();     break;
+    case Src::TextSize:      if (propTextSize)      propTextSize->setFocus();      break;
+    case Src::None: default: break;
     }
-
-    // Recarga y vuelve a enfocar el control correcto
-    QTimer::singleShot(0, this, [=]{
-        applySchemaAndRefresh(s, row);
-
-        switch (who) {
-        case Src::Formato:
-            if (propFormato) propFormato->setFocus();
-            break;
-        case Src::DecPlaces:
-            if (propDecimalPlaces) propDecimalPlaces->setFocus();
-            break;
-        case Src::AutoFormato:
-            if (propAutoFormato) propAutoFormato->setFocus();
-            break;
-        case Src::ValorPred:
-            if (propValorPred) propValorPred->setFocus();
-            break;
-        case Src::TextSize:
-            if (propTextSize) propTextSize->setFocus();
-            break;
-        case Src::None:
-        default:
-            break;
-        }
-    });
 }
+
 
 
 void TablesPage::clearPropsUi() {
@@ -929,22 +935,26 @@ void TablesPage::updateGeneralUiForType(const QString& type)
         addFmt("EUR",      "€3,456.79");
         addFmt("Millares", "3,456.79");
 
-        QString fmt = "Millares"; // por defecto en Número
-        if (r >= 0 && r < m_currentSchema.size() && !m_currentSchema[r].formato.trimmed().isEmpty())
-            fmt = m_currentSchema[r].formato.trimmed();
+        const QString savedFmt = (r >= 0 && r < m_currentSchema.size())
+                                     ? m_currentSchema[r].formato.trimmed()
+                                     : QString();
+        const QString fmt = baseFormatKey(savedFmt).isEmpty()
+                                ? QStringLiteral("Millares")
+                                : baseFormatKey(savedFmt);
 
         int ix = 0;
         for (int i = 0; i < propFormato->count(); ++i)
             if (propFormato->itemData(i).toString() == fmt) { ix = i; break; }
         propFormato->setCurrentIndex(ix);
+
         propFormato->blockSignals(false);
 
-        // ---- DECIMALES (0..4; por defecto 2) ----
         setRowVisible(fl, propDecimalPlaces, true);
         propDecimalPlaces->blockSignals(true);
-        if (propDecimalPlaces->findText("2") < 0) propDecimalPlaces->addItem("2");
-        propDecimalPlaces->setCurrentText("2");
+        const int dp = parseDecPlaces(savedFmt);   // usa el mismo savedFmt de arriba
+        propDecimalPlaces->setCurrentText(QString::number(dp));
         propDecimalPlaces->blockSignals(false);
+
 
         setRowVisible(fl, propTextSize,  false);
         setRowVisible(fl, propValorPred, true);
@@ -1111,31 +1121,31 @@ void TablesPage::updateGeneralUiForType(const QString& type)
 
         // Seleccionar lo guardado; si no hay, usar LPS
         int r = fieldsTable ? fieldsTable->currentRow() : -1;
-        QString fmt = QStringLiteral("LPS");
-        if (r >= 0 && r < m_currentSchema.size()) {
-            const QString saved = m_currentSchema[r].formato.trimmed();
-            if (!saved.isEmpty()) fmt = saved;
-        }
+        const QString savedFmt = (r >= 0 && r < m_currentSchema.size())
+                                     ? m_currentSchema[r].formato.trimmed()
+                                     : QString();
+        const QString fmt = baseFormatKey(savedFmt).isEmpty()
+                                ? QStringLiteral("LPS")
+                                : baseFormatKey(savedFmt);
+
         int ix = 0;
         for (int i = 0; i < propFormato->count(); ++i)
             if (propFormato->itemData(i).toString() == fmt) { ix = i; break; }
         propFormato->setCurrentIndex(ix);
+
         propFormato->blockSignals(false);
 
-        // Decimales visibles (por defecto 2)
         setRowVisible(fl, propDecimalPlaces, true);
         propDecimalPlaces->blockSignals(true);
-        if (propDecimalPlaces->findText("2") < 0) propDecimalPlaces->addItem("2");
-        propDecimalPlaces->setCurrentText("2");
+        const int dp = parseDecPlaces(savedFmt);
+        propDecimalPlaces->setCurrentText(QString::number(dp));
         propDecimalPlaces->blockSignals(false);
+
 
         setRowVisible(fl, propValorPred, true);
         syncRequired(isPk, row);
         return;
     }
-
-
-
 
 }
 
