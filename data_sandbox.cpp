@@ -1,8 +1,9 @@
 #include <QApplication>
 #include "recordspage.h"
 
-int main(int argc, char** argv){
+int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
-    RecordsPage w; w.resize(900,550); w.show();
+    RecordsPage w;          // El .ui ya define 1140x574
+    w.show();
     return app.exec();
 }

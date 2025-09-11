@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>shell/undoBtn.png</file>
+        <file>shell/saveBtn.png</file>
+        <file>shell/redoBtn.png</file>
+    </qresource>
+</RCC>

@@ -1,0 +1,657 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RecordsPage</class>
+ <widget class="QWidget" name="RecordsPage">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1140</width>
+    <height>574</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Form</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">/* ====== Base ====== */
+#RecordsPage, #RecordsPage * {
+  background:#ffffff;
+  color:#222;
+  font:10pt &quot;Segoe UI&quot;;
+}
+
+/* Barras superior e inferior (toolbars locales de RecordsPage) */
+#headerBar, #footerBar {
+  background:#f3f3f3;
+  border:1px solid #c8c8c8;
+  border-left:0; border-right:0;
+}
+#headerBar { border-top:0; }
+#footerBar { border-bottom:0; }
+
+/* Botones de las barras y del bloque de editor */
+#headerBar QToolButton, #footerBar QToolButton, #editorButtons QToolButton {
+  background:transparent;
+  border:1px solid transparent;
+  padding:4px 8px;
+  border-radius:4px;
+}
+#headerBar QToolButton:hover, #footerBar QToolButton:hover, #editorButtons QToolButton:hover {
+  background:#efefef; border-color:#d0d0d0;
+}
+#headerBar QToolButton:pressed, #footerBar QToolButton:pressed, #editorButtons QToolButton:pressed {
+  background:#e5e5e5;
+}
+#headerBar QToolButton:disabled, #footerBar QToolButton:disabled {
+  opacity:0.5;
+}
+
+/* Entradas y campos del editor */
+QLineEdit, QComboBox, QDateEdit, QDoubleSpinBox, QTextEdit {
+  background:#ffffff;
+  border:1px solid #bfbfbf;
+  border-radius:3px;
+  padding:4px 6px;
+}
+QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QDoubleSpinBox:focus, QTextEdit:focus {
+  border:2px solid #c0504d;   /* foco rojo, igual que en Tables */
+}
+QLineEdit::placeholder { color:#888; }
+
+/* Popup del combo */
+QComboBox QAbstractItemView {
+  background:#ffffff;
+  border:1px solid #bfbfbf;
+  selection-background-color:#d9e1f2;
+}
+
+/* Título del panel de edición */
+#lblFormTitle {
+  font-weight:bold;
+  color:#9f3639;  /* acento burdeos para continuidad con Shell */
+}
+
+/* Tabla de registros (Datasheet) */
+#twRegistros {
+  background:#ffffff;
+  border:1px solid #cfcfcf;
+  border-radius:3px;
+  gridline-color:#d0d0d0;
+  alternate-background-color:#fafafa;
+}
+#twRegistros QHeaderView::section {
+  background:#f3f3f3;              /* encabezado gris (datasheet) */
+  color:#000;
+  padding:6px 8px;
+  border:1px solid #d6d6d6;
+  font-weight:600;
+}
+QTableView::item:selected { background:#d9e1f2; color:#000; }
+QTableView::item:hover    { background:#f5f7fb; }
+
+/* Scroll del formulario */
+#saForm { border:1px solid #dcdcdc; background:transparent; }
+#saForm &gt; QWidget { background:#ffffff; }
+
+/* Etiquetas de estado/paginación */
+#lblEstado, #lblPagina, #lblTotal { color:#555; }
+
+/* Checkboxes un poco más aireados */
+QCheckBox { spacing:6px; }
+
+/* Paneles principales (por si los quieres dirigir) */
+#panelEditor, #panelTabla { background:#ffffff; }
+</string>
+  </property>
+  <layout class="QGridLayout" name="gridLayout">
+   <item row="0" column="0">
+    <layout class="QVBoxLayout" name="rootLayout">
+     <property name="spacing">
+      <number>8</number>
+     </property>
+     <property name="leftMargin">
+      <number>10</number>
+     </property>
+     <property name="topMargin">
+      <number>10</number>
+     </property>
+     <property name="rightMargin">
+      <number>10</number>
+     </property>
+     <property name="bottomMargin">
+      <number>10</number>
+     </property>
+     <item>
+      <widget class="QFrame" name="headerBar">
+       <property name="frameShape">
+        <enum>QFrame::Shape::NoFrame</enum>
+       </property>
+       <property name="frameShadow">
+        <enum>QFrame::Shadow::Raised</enum>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayout">
+        <item>
+         <layout class="QHBoxLayout" name="headerLayout">
+          <item>
+           <widget class="QLabel" name="lblTitulo">
+            <property name="font">
+             <font>
+              <family>Segoe UI</family>
+              <pointsize>10</pointsize>
+              <italic>false</italic>
+              <bold>false</bold>
+             </font>
+            </property>
+            <property name="text">
+             <string>Registros</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QComboBox" name="cbTabla">
+            <property name="minimumSize">
+             <size>
+              <width>220</width>
+              <height>0</height>
+             </size>
+            </property>
+            <item>
+             <property name="text">
+              <string>&quot;Seleccione tabla…&quot;</string>
+             </property>
+            </item>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="leBuscar">
+            <property name="text">
+             <string>Buscar (todas las columnas)...</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="btnLimpiarBusqueda">
+            <property name="text">
+             <string>X</string>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="chkVerEliminados">
+            <property name="text">
+             <string>Ver Eliminados</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="spHeader">
+            <property name="orientation">
+             <enum>Qt::Orientation::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QToolButton" name="btnInsertar">
+            <property name="text">
+             <string>Insertar</string>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="btnEditar">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="text">
+             <string>Editar</string>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="btnEliminar">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="text">
+             <string>Eliminar</string>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="btnGuardar">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="text">
+             <string>Guardar</string>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="btnCancelar">
+            <property name="enabled">
+             <bool>false</bool>
+            </property>
+            <property name="text">
+             <string>Cancelar</string>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
+     <item>
+      <spacer name="splitMain">
+       <property name="orientation">
+        <enum>Qt::Orientation::Horizontal</enum>
+       </property>
+       <property name="sizeHint" stdset="0">
+        <size>
+         <width>40</width>
+         <height>10</height>
+        </size>
+       </property>
+      </spacer>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="horizontalLayout_3">
+       <item>
+        <widget class="QWidget" name="panelTabla" native="true">
+         <layout class="QHBoxLayout" name="horizontalLayout_2">
+          <item>
+           <layout class="QVBoxLayout" name="lyTabla">
+            <item>
+             <widget class="QTableWidget" name="twRegistros">
+              <property name="minimumSize">
+               <size>
+                <width>720</width>
+                <height>0</height>
+               </size>
+              </property>
+              <property name="editTriggers">
+               <set>QAbstractItemView::EditTrigger::NoEditTriggers</set>
+              </property>
+              <property name="alternatingRowColors">
+               <bool>true</bool>
+              </property>
+              <property name="selectionBehavior">
+               <enum>QAbstractItemView::SelectionBehavior::SelectRows</enum>
+              </property>
+              <property name="sortingEnabled">
+               <bool>true</bool>
+              </property>
+              <property name="wordWrap">
+               <bool>false</bool>
+              </property>
+              <attribute name="horizontalHeaderStretchLastSection">
+               <bool>true</bool>
+              </attribute>
+              <attribute name="verticalHeaderVisible">
+               <bool>false</bool>
+              </attribute>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QWidget" name="panelEditor" native="true">
+         <property name="minimumSize">
+          <size>
+           <width>40</width>
+           <height>0</height>
+          </size>
+         </property>
+         <layout class="QVBoxLayout" name="verticalLayout_5">
+          <item>
+           <layout class="QVBoxLayout" name="lyEditor">
+            <property name="spacing">
+             <number>8</number>
+            </property>
+            <property name="leftMargin">
+             <number>8</number>
+            </property>
+            <property name="topMargin">
+             <number>8</number>
+            </property>
+            <property name="rightMargin">
+             <number>8</number>
+            </property>
+            <property name="bottomMargin">
+             <number>8</number>
+            </property>
+            <item>
+             <widget class="QLabel" name="lblFormTitle">
+              <property name="text">
+               <string>Editor</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QScrollArea" name="saForm">
+              <property name="widgetResizable">
+               <bool>true</bool>
+              </property>
+              <widget class="QWidget" name="formContainer">
+               <property name="geometry">
+                <rect>
+                 <x>0</x>
+                 <y>0</y>
+                 <width>280</width>
+                 <height>451</height>
+                </rect>
+               </property>
+               <layout class="QHBoxLayout" name="horizontalLayout_4">
+                <item>
+                 <layout class="QFormLayout" name="formLayout">
+                  <property name="labelAlignment">
+                   <set>Qt::AlignmentFlag::AlignRight|Qt::AlignmentFlag::AlignTrailing|Qt::AlignmentFlag::AlignVCenter</set>
+                  </property>
+                  <item row="0" column="0">
+                   <widget class="QLineEdit" name="leId">
+                    <property name="text">
+                     <string>ID</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="1" column="0">
+                   <widget class="QLineEdit" name="leNombre">
+                    <property name="text">
+                     <string>Nombre</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="2" column="0">
+                   <widget class="QLineEdit" name="leCorreo">
+                    <property name="text">
+                     <string>Correo</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="3" column="0">
+                   <widget class="QLineEdit" name="leTelefono">
+                    <property name="text">
+                     <string>Telefono</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="4" column="0">
+                   <widget class="QDateEdit" name="deFecha">
+                    <property name="calendarPopup">
+                     <bool>true</bool>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="5" column="0">
+                   <widget class="QCheckBox" name="chkActivo">
+                    <property name="text">
+                     <string>Activo</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="6" column="0">
+                   <widget class="QDoubleSpinBox" name="dsbSaldo">
+                    <property name="prefix">
+                     <string>$</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="7" column="0">
+                   <widget class="QTextEdit" name="pteNotas">
+                    <property name="minimumSize">
+                     <size>
+                      <width>0</width>
+                      <height>80</height>
+                     </size>
+                    </property>
+                    <property name="html">
+                     <string>&lt;!DOCTYPE HTML PUBLIC &quot;-//W3C//DTD HTML 4.0//EN&quot; &quot;http://www.w3.org/TR/REC-html40/strict.dtd&quot;&gt;
+&lt;html&gt;&lt;head&gt;&lt;meta name=&quot;qrichtext&quot; content=&quot;1&quot; /&gt;&lt;meta charset=&quot;utf-8&quot; /&gt;&lt;style type=&quot;text/css&quot;&gt;
+p, li { white-space: pre-wrap; }
+hr { height: 1px; border-width: 0; }
+li.unchecked::marker { content: &quot;\2610&quot;; }
+li.checked::marker { content: &quot;\2612&quot;; }
+&lt;/style&gt;&lt;/head&gt;&lt;body style=&quot; font-family:'Segoe UI'; font-size:10pt; font-weight:400; font-style:normal;&quot;&gt;
+&lt;p style=&quot; margin-top:0px; margin-bottom:0px; margin-left:0px; margin-right:0px; -qt-block-indent:0; text-indent:0px;&quot;&gt;&lt;span style=&quot; font-size:9pt;&quot;&gt;Notas&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="8" column="0">
+                   <widget class="QLineEdit" name="leExtra1">
+                    <property name="text">
+                     <string>Extra 1</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="9" column="0">
+                   <widget class="QLineEdit" name="leExtra2">
+                    <property name="text">
+                     <string>Extra 2</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item row="10" column="0">
+                   <widget class="QLineEdit" name="leExtra3">
+                    <property name="text">
+                     <string>Extra 3</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </item>
+               </layout>
+              </widget>
+             </widget>
+            </item>
+            <item>
+             <widget class="QFrame" name="editorButtons">
+              <property name="minimumSize">
+               <size>
+                <width>0</width>
+                <height>50</height>
+               </size>
+              </property>
+              <property name="frameShape">
+               <enum>QFrame::Shape::StyledPanel</enum>
+              </property>
+              <property name="frameShadow">
+               <enum>QFrame::Shadow::Raised</enum>
+              </property>
+              <layout class="QHBoxLayout" name="horizontalLayout_6">
+               <item>
+                <layout class="QHBoxLayout" name="lyEditorButtons">
+                 <item>
+                  <widget class="QToolButton" name="btnLimpiarForm">
+                   <property name="text">
+                    <string>Limpiar</string>
+                   </property>
+                   <property name="autoRaise">
+                    <bool>true</bool>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <widget class="QToolButton" name="btnGenerarDummy">
+                   <property name="text">
+                    <string>Generar dummy</string>
+                   </property>
+                   <property name="autoRaise">
+                    <bool>true</bool>
+                   </property>
+                  </widget>
+                 </item>
+                 <item>
+                  <spacer name="spEditorButtons">
+                   <property name="orientation">
+                    <enum>Qt::Orientation::Horizontal</enum>
+                   </property>
+                   <property name="sizeHint" stdset="0">
+                    <size>
+                     <width>40</width>
+                     <height>20</height>
+                    </size>
+                   </property>
+                  </spacer>
+                 </item>
+                </layout>
+               </item>
+              </layout>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <widget class="QFrame" name="footerBar">
+       <property name="minimumSize">
+        <size>
+         <width>0</width>
+         <height>40</height>
+        </size>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::NoFrame</enum>
+       </property>
+       <property name="frameShadow">
+        <enum>QFrame::Shadow::Raised</enum>
+       </property>
+       <layout class="QHBoxLayout" name="horizontalLayout_7">
+        <item>
+         <layout class="QHBoxLayout" name="footerLayout">
+          <item>
+           <widget class="QToolButton" name="btnPrimero">
+            <property name="text">
+             <string>|&lt;</string>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="btnAnterior">
+            <property name="text">
+             <string>&lt;</string>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lblPagina">
+            <property name="minimumSize">
+             <size>
+              <width>70</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>1 / 1</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignmentFlag::AlignCenter</set>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="btnSiguiente">
+            <property name="text">
+             <string>&gt;</string>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QToolButton" name="btnUltimo">
+            <property name="text">
+             <string>&gt;|</string>
+            </property>
+            <property name="autoRaise">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="spFooter">
+            <property name="orientation">
+             <enum>Qt::Orientation::Horizontal</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>40</width>
+              <height>20</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+          <item>
+           <widget class="QLabel" name="lblTotal">
+            <property name="text">
+             <string>Mostrando 0 de 0</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lblEstado">
+            <property name="minimumSize">
+             <size>
+              <width>160</width>
+              <height>0</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>Listo</string>
+            </property>
+            <property name="alignment">
+             <set>Qt::AlignmentFlag::AlignLeading|Qt::AlignmentFlag::AlignLeft|Qt::AlignmentFlag::AlignVCenter</set>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+       </layout>
+      </widget>
+     </item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

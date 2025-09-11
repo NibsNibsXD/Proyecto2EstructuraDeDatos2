@@ -6,33 +6,29 @@
 #include <QTableWidget>
 #include <QLineEdit>
 #include <QComboBox>
-#include <QSpinBox>
 #include <QCheckBox>
 #include <QPushButton>
 #include <QTabWidget>
 #include <QMap>
+#include <QSignalBlocker>
+#include <QTabBar>
 
-struct FieldDef {
-    QString name;
-    QString type;      // Autonumeración, Número, Fecha/Hora, Moneda, Texto corto
-    int     size = 0;  // tamaño/precisión sugerido
-    bool    pk = false;
-
-    // Propiedades (maqueta)
-    QString formato;
-    QString mascaraEntrada;
-    QString titulo;
-    QString valorPredeterminado;
-    QString reglaValidacion;
-    QString textoValidacion;
-    bool    requerido = false;
-    QString indexado; // No / Sí (con duplicados) / Sí (sin duplicados)
-};
+#include "datamodel.h"   // FieldDef / Schema / DataModel
 
 class TablesPage : public QWidget {
     Q_OBJECT
 public:
-    explicit TablesPage(QWidget *parent = nullptr);
+    explicit TablesPage(QWidget *parent = nullptr, bool withSidebar = true);
+    QListWidget* tableListWidget() const { return tablesList; }
+
+    // Compatibilidad con ShellWindow: toma el esquema desde el DataModel
+    Schema schemaFor(const QString& table) const { return DataModel::instance().schema(table); }
+
+signals:
+    void tableSelected(const QString& tableName);
+    void schemaChanged(const QString& tableName, const Schema&);
+protected:
+    bool eventFilter(QObject* obj, QEvent* ev) override;
 
 private slots:
     // acciones de tabla/campos
@@ -50,42 +46,47 @@ private slots:
 
 private:
     // Sidebar (lista de tablas)
-    QListWidget  *tablesList;
+    QListWidget  *tablesList = nullptr;
 
     // Barra superior
-    QLineEdit    *tableNameEdit;
-    QLineEdit    *tableDescEdit;     // NUEVO: descripción de tabla
-    QPushButton  *btnNueva;
-    QPushButton  *btnEditar;
-    QPushButton  *btnEliminar;
+    QLineEdit    *tableNameEdit = nullptr;
+    QLineEdit    *tableDescEdit = nullptr;     // descripción de tabla (opcional)
+    QPushButton  *btnNueva = nullptr;
+    QPushButton  *btnEditar = nullptr;
+    QPushButton  *btnEliminar = nullptr;
 
-    // Grid central de campos
-    QTableWidget *fieldsTable;
-    QPushButton  *btnAddField;
-    QPushButton  *btnRemoveField;
+    // Grid central de campos (3 columnas: Nombre | Tipo | PK)
+    QTableWidget *fieldsTable = nullptr;
+    QPushButton  *btnAddField = nullptr;
+    QPushButton  *btnRemoveField = nullptr;
 
     // Propiedades abajo
-    QTabWidget   *propTabs;
+    QTabWidget   *propTabs = nullptr;
 
     // General
-    QLineEdit    *propFormato;
-    QLineEdit    *propMascara;
-    QLineEdit    *propTitulo;
-    QLineEdit    *propValorPred;
-    QLineEdit    *propReglaVal;
-    QLineEdit    *propTextoVal;
-    QCheckBox    *propRequerido;
-    QComboBox    *propIndexado;
+    QComboBox   *propFormato = nullptr;      // texto "Formato" para tipos NO auto
+    QComboBox    *propAutoFormato = nullptr;  // Long Integer / Replication ID (solo auto)
+    QLineEdit    *propValorPred = nullptr;
 
-    // Datos en memoria: nombreTabla -> lista de campos
-    QMap<QString, QList<FieldDef>> dbMock;
+    QLineEdit *propTextSize = nullptr;
+    QCheckBox    *propRequerido = nullptr;
 
-    // NUEVO: memoria de descripciones por tabla
-    QMap<QString, QString> tableDesc_;   // nombreTabla -> descripción
+    // (Opcionales, ya no se muestran)
+    QComboBox    *propAutoNewValues = nullptr;
+    QLineEdit    *propTitulo = nullptr;
+    QComboBox    *propIndexado = nullptr;
+
+    // helpers
+    void updateGeneralUiForType(const QString& type);
+    void makePropsUniformWidth();
+
+
+    // Estado actual (tabla seleccionada y su esquema)
+    QString m_currentTable;
+    Schema  m_currentSchema;
 
     // helpers UI
     void setupUi();
-    void setupFakeData();
     void applyQss();
     void loadTableToUi(const QString &tableName);
     void loadFieldPropsToUi(const FieldDef &fd);
@@ -94,12 +95,24 @@ private:
     void connectRowEditors(int row);
     QString currentTableName() const;
 
-    // NUEVO: helper para limpiar panel de propiedades
     void clearPropsUi();
+    void updateAutoControlsSensitivity();  // habilita/deshabilita "New values"
+    static QString normType(const QString& t);
 
-    // helpers de validación/consulta
-    bool tableExists(const QString& name) const;
+    // NUEVOS helpers usados por el .cpp
+    void updateTablesList(const QString& preferSelect = QString());
+
+    bool applySchemaAndRefresh(const Schema& s, int preserveRow = -1);
+
+    // validación
     bool isValidTableName(const QString& name) const;
+
+    bool withSidebar_ = true;
+    QWidget *sidebarBox_ = nullptr;
+    QTabBar *tableTabs = nullptr;
+
+    // Guardia para evitar reentradas por cambios programáticos de UI
+    bool m_updatingUi = false;
 };
 
 #endif // TABLESPAGE_H
