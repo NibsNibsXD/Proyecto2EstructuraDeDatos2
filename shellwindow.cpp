@@ -31,6 +31,20 @@
 #include <QDialogButtonBox>
 #include <QMessageBox>
 #include <QCloseEvent>
+#include <QGraphicsView>
+#include <QGraphicsScene>
+#include <QGraphicsObject>
+#include <QGraphicsPathItem>
+#include <QFontMetrics>
+#include <QtMath>
+#include <QGraphicsItem>
+#include <QPointer>
+#include <QMap>
+#include <cmath>
+#include <QVector2D>
+
+
+
 
 
 
@@ -77,7 +91,7 @@ static bool showAddRelationDialog(QWidget* parent) {
     auto refillCols = [&](QComboBox& tableCb, QComboBox& colCb){
         colCb.clear();
         const Schema s = dm.schema(tableCb.currentText());
-        for (const auto& fd : s) colCb.addItem(fd.name);
+        for (int i=0;i<s.size();++i) colCb.addItem(s[i].name, i); // guarda índice
     };
     refillCols(cbChildTable, cbChildCol);
     refillCols(cbParentTable, cbParentCol);
@@ -101,18 +115,79 @@ static bool showAddRelationDialog(QWidget* parent) {
 
     if (dlg.exec() != QDialog::Accepted) return false;
 
+    // ===== Validaciones tipo Access =====
+    const QString childT = cbChildTable.currentText();
+    const QString parentT= cbParentTable.currentText();
+    const int childIdx   = cbChildCol.currentData().toInt();
+    const int parentIdx  = cbParentCol.currentData().toInt();
+    const Schema childS  = dm.schema(childT);
+    const Schema parentS = dm.schema(parentT);
+    const FieldDef& childF = childS[childIdx];
+    const FieldDef& parentF= parentS[parentIdx];
+
+    auto sameTableSameCol = (childT == parentT && childIdx == parentIdx);
+    if (sameTableSameCol) {
+        QMessageBox::warning(parent, "Relación", "No puedes relacionar una columna consigo misma.");
+        return false;
+    }
+
+    // 1) Columna padre debe ser PK o índice único (estilo Access)
+    bool parentIsUnique = parentF.pk || parentF.indexado.contains("sin duplicados", Qt::CaseInsensitive);
+    if (!parentIsUnique) {
+        QMessageBox::warning(parent, "Relación",
+                             "La columna padre debe ser clave primaria o tener un índice único (sin duplicados).");
+        return false;
+    }
+
+    // 2) Compatibilidad de tipos (heurística sencilla)
+    auto norm = [](QString t){
+        t = t.toLower().trimmed();
+        if (t.contains("auto")) t = "number";           // autonumeración → número
+        if (t.contains("entero") || t.contains("number")) return QString("number");
+        if (t.contains("fecha")   || t.contains("hora")) return QString("datetime");
+        if (t.contains("texto")   || t.contains("char")) return QString("text");
+        if (t.contains("bool"))                         return QString("bool");
+        return t;
+    };
+    const QString tChild  = norm(childF.type);
+    const QString tParent = norm(parentF.type);
+    bool typeOk = (tChild == tParent) ||
+                  (tChild == "number"  && tParent == "number") ||
+                  (tChild == "text"    && tParent == "text");
+    if (!typeOk) {
+        QMessageBox::warning(parent, "Relación",
+                             QString("Tipos incompatibles: hija (%1) vs padre (%2).").arg(childF.type, parentF.type));
+        return false;
+    }
+
+    // 3) FK hija no debe ser PK si quieres permitir NULL en SetNull
+    if (cbOnDelete.currentText() == "SetNull" && childF.pk) {
+        QMessageBox::warning(parent, "Relación",
+                             "No puede usarse SET NULL si la columna hija es clave primaria.");
+        return false;
+    }
+
+    // 4) No duplicar relación exacta
+    for (const auto& fk : dm.relationshipsFor(childT)) {
+        if (fk.childTable==childT && fk.childCol==childIdx &&
+            fk.parentTable==parentT && fk.parentCol==parentIdx) {
+            QMessageBox::warning(parent, "Relación", "Esa relación ya existe.");
+            return false;
+        }
+    }
+
+    // Crear FK
     QString err;
-    auto del = static_cast<FkAction>(cbOnDelete.currentIndex());  // orden: Restrict, Cascade, SetNull
+    auto del = static_cast<FkAction>(cbOnDelete.currentIndex());  // Restrict, Cascade, SetNull
     auto upd = static_cast<FkAction>(cbOnUpdate.currentIndex());
-    if (!dm.addRelationship(cbChildTable.currentText(), cbChildCol.currentText(),
-                            cbParentTable.currentText(), cbParentCol.currentText(),
-                            del, upd, &err)) {
+    if (!dm.addRelationship(childT, childF.name, parentT, parentF.name, del, upd, &err)) {
         QMessageBox::warning(parent, "Relación", err);
         return false;
     }
-    QMessageBox::information(parent, "Relación", "Relación creada.");
+    QMessageBox::information(parent, "Relación", "Relación creada correctamente.");
     return true;
 }
+
 
 // --- Panel izquierdo tipo Access (no usado directamente, helper por si se necesita) ---
 static QWidget* buildLeftPanel(int width, int height) {
@@ -369,102 +444,337 @@ static QWidget* makeRibbonGroup(const QString& title, const QList<QToolButton*>&
     return wrap;
 }
 
-// ------------------------------------------------------
-// ======== Relaciones (mock) ========
-class RelationsMockWidget : public QWidget {
-
+// ===============================================
+// ====== Diagrama de Relaciones + Sidebar =======
+// ===============================================
+class TableNode : public QGraphicsObject {
+    Q_OBJECT
 public:
-    explicit RelationsMockWidget(QWidget* parent=nullptr) : QWidget(parent) {
-        setAutoFillBackground(true);
-        setPalette(QPalette(QColor("#f2f2f6"))); // gris clarito
+    TableNode(const QString& t, const Schema& s, QGraphicsItem* parent=nullptr)
+        : QGraphicsObject(parent), table_(t), schema_(s) {
+        setFlag(ItemIsMovable, true);
+        setFlag(ItemSendsGeometryChanges, true);
+        setCacheMode(DeviceCoordinateCache);
+
+        QFont ft; ft.setBold(true);
+        int w = QFontMetrics(ft).horizontalAdvance(table_) + 24;
+        QFontMetrics fm(QApplication::font());
+        for (const auto& col : schema_) w = qMax(w, fm.horizontalAdvance(col.name) + 40);
+        int h = int(headerH_ + rowH_ * qMax(1, schema_.size()));
+        rect_ = QRectF(0,0, qMax(220, w), h);
     }
+
+    QString tableName() const { return table_; }
+    QPointF portScenePos(int i) const {
+        const qreal y = headerH_ + rowH_*(i + 0.5);
+        const qreal x = rect_.right();
+        return mapToScene(QPointF(x, y));
+    }
+    QRectF boundingRect() const override { return rect_; }
+
+signals:
+    void moved();
+
 protected:
-    void paintEvent(QPaintEvent* e) override {
-        Q_UNUSED(e);
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
+    void paint(QPainter* p, const QStyleOptionGraphicsItem*, QWidget*) override {
+        p->setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = rect_;
 
-        // Cajas fijas
-        QRect boxA(90, 80, 220, 170);                 // Alumno (izq)
-        QRect boxB(width() - 320, 130, 220, 140);     // Matricula (der)
+        // cuerpo
+        p->setPen(Qt::NoPen);
+        p->setBrush(QColor(255,255,240));
+        p->drawRoundedRect(r, 8, 8);
 
-        // sombra sutil
-        auto drawShadow = [&](const QRect& r){
-            QPainterPath path; path.addRoundedRect(r.adjusted(2,2,2,2), 6, 6);
-            QColor sh(0,0,0,30);
-            for (int i=0;i<6;++i){ sh.setAlpha(30 - i*5); p.fillPath(path.translated(i, i), sh); }
+        // header
+        p->setBrush(QColor(255,242,204));
+        p->drawRoundedRect(QRectF(r.left(), r.top(), r.width(), headerH_), 8, 8);
+        p->setPen(QPen(QColor(214,214,214), 1));
+        p->drawLine(QPointF(r.left(), headerH_), QPointF(r.right(), headerH_));
+
+        // título
+        QFont f = p->font(); f.setBold(true); p->setFont(f);
+        p->setPen(QColor(60,60,60));
+        p->drawText(QRectF(r.left()+8, r.top(), r.width()-16, headerH_), Qt::AlignVCenter|Qt::AlignLeft, table_);
+
+        // columnas
+        f.setBold(false); p->setFont(f);
+        for (int i=0;i<schema_.size();++i) {
+            const auto& col = schema_[i];
+            if (col.pk) { QFont fb=p->font(); fb.setBold(true); p->setFont(fb); p->setPen(QColor(80,40,40)); }
+            else         { QFont fn=p->font(); fn.setBold(false); p->setFont(fn); p->setPen(QColor(40,40,40)); }
+
+            p->drawText(QRectF(r.left()+8, headerH_ + rowH_*i, r.width()-16, rowH_),
+                        Qt::AlignVCenter|Qt::AlignLeft,
+                        (col.pk ? QString::fromUtf8("🔑 ") : "  ") + col.name);
+
+            // punto de conexión
+            p->setPen(Qt::NoPen);
+            p->setBrush(QColor(200,200,200));
+            p->drawEllipse(QPointF(r.right()-6, headerH_ + rowH_*i + rowH_/2), 3.5, 3.5);
+        }
+
+        // borde
+        p->setPen(QPen(QColor(214,214,214), 1));
+        p->setBrush(Qt::NoBrush);
+        p->drawRoundedRect(r, 8, 8);
+    }
+
+    QVariant itemChange(GraphicsItemChange ch, const QVariant& v) override {
+        if (ch == ItemPositionHasChanged) emit moved();
+        return QGraphicsObject::itemChange(ch, v);
+    }
+
+private:
+    QString table_;
+    Schema  schema_;
+    QRectF  rect_;
+    qreal   headerH_ = 28.0;
+    qreal   rowH_    = 22.0;
+};
+
+class RelationEdge : public QGraphicsPathItem {
+public:
+    RelationEdge(TableNode* c, int cf, TableNode* p, int pf, const QString& tooltip)
+        : QGraphicsPathItem(nullptr), c_(c), cf_(cf), p_(p), pf_(pf)
+    {
+        setZValue(-1);
+        setPen(QPen(QColor(120,120,120), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        setToolTip(tooltip);
+        refresh();
+
+        if (c_) QObject::connect(c_, &TableNode::moved, [this]{ refresh(); });
+        if (p_) QObject::connect(p_, &TableNode::moved, [this]{ refresh(); });
+    }
+
+    void refresh() {
+        if (!c_ || !p_) return;
+
+        // Puntos “puerto” (centro del puntito en la fila)
+        a_ = c_->portScenePos(cf_);
+        b_ = p_->portScenePos(pf_);
+
+        // Alejar un poco de los bordes para que la línea no “entre” al rectángulo
+        QVector2D v(b_ - a_);
+        if (v.length() < 1.0) return;
+        QVector2D u = v.normalized();
+        const qreal inset = 10.0;
+        a1_ = a_ + u.toPointF()*inset;
+        b1_ = b_ - u.toPointF()*inset;
+
+        // Trayectoria ortogonal: a -> (midX, a.y) -> (midX, b.y) -> b
+        const qreal midX = 0.5*(a1_.x() + b1_.x());
+
+        QPainterPath path(a1_);
+        path.lineTo(QPointF(midX, a1_.y()));
+        path.lineTo(QPointF(midX, b1_.y()));
+        path.lineTo(b1_);
+        setPath(path);
+    }
+
+protected:
+    void paint(QPainter* p, const QStyleOptionGraphicsItem* o, QWidget* w) override {
+        QGraphicsPathItem::paint(p, o, w);
+        const int n = path().elementCount();
+        if (n < 3) return; // necesitamos al menos move + 2 puntos
+
+        auto drawStubAt = [&](const QPointF& from, const QPointF& to, const QPointF& at) {
+            QVector2D seg(to - from);
+            if (seg.length() < 0.1) return;
+            QVector2D nrm(-seg.y(), seg.x());
+            nrm.normalize();
+            const qreal halfStub = 6.0;
+            QPointF d = nrm.toPointF()*halfStub;
+            p->setPen(pen());
+            p->drawLine(at - d, at + d);
         };
-        drawShadow(boxA);
-        drawShadow(boxB);
 
-        // tabla estilo Access
-        auto drawTable = [&](const QRect& r, const QString& title, const QStringList& fields, int pkIndex){
-            p.setPen(QPen(QColor("#d16a6d"), 1));
-            p.setBrush(Qt::white);
-            p.drawRoundedRect(r, 6, 6);
+        QPointF firstBend(path().elementAt(1).x, path().elementAt(1).y);
+        drawStubAt(a1_, firstBend, a1_);
 
-            QRect hdr = r.adjusted(0,0,0,-(r.height()-28));
-            p.fillRect(hdr, QColor("#ffe3e4"));
-            p.setPen(QPen(QColor("#9f3639"), 1));
-            p.drawLine(hdr.bottomLeft(), hdr.bottomRight());
+        QPointF prevOfEnd(path().elementAt(n-2).x, path().elementAt(n-2).y);
+        drawStubAt(prevOfEnd, b1_, b1_);
+    }
 
-            p.setPen(QColor("#9f3639"));
-            QFont f = p.font(); f.setBold(true); p.setFont(f);
-            p.drawText(hdr.adjusted(8,0,-8,0), Qt::AlignVCenter|Qt::AlignLeft, title);
 
-            QRect body = r.adjusted(10, hdr.height()+6, -10, -10);
-            p.setPen(QColor("#333"));
-            QFont nf = p.font(); nf.setBold(false); p.setFont(nf);
+private:
+    QPointer<TableNode> c_;
+    int cf_ = -1;
+    QPointer<TableNode> p_;
+    int pf_ = -1;
 
-            int y = body.top();
-            for (int i=0;i<fields.size();++i) {
-                const bool isPk = (i == pkIndex);
-                QString line = (isPk ? QString::fromUtf8("🔑 ") : "  ");
-                line += fields[i];
-                if (isPk) {
-                    QFont bf = p.font(); bf.setBold(true); p.setFont(bf);
-                    p.setPen(QColor("#9f3639"));
-                } else {
-                    p.setPen(QColor("#333"));
-                    QFont tf = p.font(); tf.setBold(false); p.setFont(tf);
-                }
-                p.drawText(QRect(body.left(), y, body.width(), 20), Qt::AlignLeft|Qt::AlignVCenter, line);
-                y += 22;
+    QPointF a_, b_;   // puertos exactos
+    QPointF a1_, b1_; // puntos ya con “inset”
+};
+
+
+
+
+class RelationsPage : public QWidget {
+    Q_OBJECT
+public:
+    explicit RelationsPage(QWidget* parent=nullptr)
+        : QWidget(parent)
+        , scene_(new QGraphicsScene(this))
+        , view_(new QGraphicsView(scene_))
+        , right_(new QWidget)
+        , list_(new QListWidget)
+        , btnAdd_(new QPushButton("Agregar la tabla seleccionada"))
+        , btnNewRel_(new QPushButton("Nueva relación…"))
+    {
+        auto *hl = new QHBoxLayout(this);
+        hl->setContentsMargins(0,0,0,0);
+        hl->setSpacing(0);
+
+        // View central (canvas)
+        view_->setRenderHint(QPainter::Antialiasing, true);
+        view_->setDragMode(QGraphicsView::RubberBandDrag);
+        view_->setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
+        view_->setStyleSheet("background:white;");  // ← fondo blanco como Access
+        hl->addWidget(view_, 1);
+
+        // Panel derecho
+        right_->setFixedWidth(220);
+        auto *rv = new QVBoxLayout(right_);
+        rv->setContentsMargins(8,8,8,8);
+        rv->setSpacing(8);
+        auto *hdr = new QLabel("Agregar tablas");
+        hdr->setStyleSheet("font-weight:bold; color:#444;");
+        list_->setSelectionMode(QAbstractItemView::SingleSelection);
+        rv->addWidget(hdr);
+        rv->addWidget(list_, 1);
+        rv->addWidget(btnAdd_);
+        rv->addWidget(btnNewRel_);
+        hl->addWidget(right_);
+
+        refreshSidebar();
+
+        connect(btnAdd_, &QPushButton::clicked, this, [this]{
+            if (auto *it = list_->currentItem()) addTableNode(it->text());
+        });
+        connect(list_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* it){
+            if (it) addTableNode(it->text());
+        });
+
+        // CLICK simple también agrega la tabla al canvas
+        connect(list_, &QListWidget::itemClicked, this, [this](QListWidgetItem* it){
+            if (it) addTableNode(it->text());
+        });
+
+        connect(btnNewRel_, &QPushButton::clicked, this, [this]{
+            emit requestAddRelation();  // lo maneja ShellWindow
+        });
+    }
+
+    // Deja el canvas en blanco (como Access al abrir Relaciones)
+    void startBlank() {
+        for (RelationEdge* e : edges_) {
+            if (!e) continue;
+            scene_->removeItem(static_cast<QGraphicsItem*>(e));
+            delete e;
+        }
+        edges_.clear();
+        for (auto n : nodes_) {
+            if (!n) continue;
+            scene_->removeItem(n);
+            delete n;
+        }
+        nodes_.clear();
+        scene_->setSceneRect(QRectF(0,0,1000,700));
+    }
+
+    // Redibuja solo las aristas (se espera que los nodos ya estén en canvas)
+    void rebuildFromModel() { redrawAll(true); }
+
+signals:
+    void requestAddRelation();  // se emite al pulsar "Nueva relación…"
+
+private:
+    QGraphicsScene* scene_;
+    QGraphicsView*  view_;
+    QWidget*        right_;
+    QListWidget*    list_;
+    QPushButton*    btnAdd_;
+    QPushButton*    btnNewRel_;
+    QMap<QString, TableNode*> nodes_;
+    QList<RelationEdge*> edges_;
+
+    void refreshSidebar() {
+        list_->clear();
+        for (const auto& t : DataModel::instance().tables())
+            list_->addItem(t);
+    }
+
+    void addTableNode(const QString& table) {
+        if (nodes_.contains(table)) return;
+        auto* n = new TableNode(table, DataModel::instance().schema(table));
+        scene_->addItem(n);
+        const int count = nodes_.size();
+        n->setPos(40 + (count%3)*300, 40 + (count/3)*220);
+        nodes_.insert(table, n);
+        redrawAll();
+    }
+
+    void redrawAll(bool clearEdgesOnly=false) {
+        // Eliminar aristas anteriores
+        for (RelationEdge* e : edges_) {
+            if (!e) continue;
+            scene_->removeItem(static_cast<QGraphicsItem*>(e));
+            delete e;
+        }
+        edges_.clear();
+
+        if (!clearEdgesOnly && nodes_.isEmpty()) {
+            // canvas en blanco, no auto-poblar nodos
+            return;
+        }
+
+        auto& dm = DataModel::instance();
+        auto idxByName = [](const Schema& s, const QString& col){
+            for (int i=0;i<s.size();++i) if (s[i].name == col) return i;
+            return -1;
+        };
+
+        for (const auto& child : dm.tables()) {
+            for (const auto& fk : dm.relationshipsFor(child)) {
+                TableNode* cnode = nodes_.value(fk.childTable, nullptr);
+                TableNode* pnode = nodes_.value(fk.parentTable, nullptr);
+                if (!cnode || !pnode) continue;
+
+                const Schema sc = dm.schema(fk.childTable);
+                const Schema sp = dm.schema(fk.parentTable);
+
+                int cf = fk.childCol;
+                int pf = fk.parentCol;
+
+                // ÍNDICES INVÁLIDOS → omitir relación
+                if (cf < 0 || pf < 0 || cf >= sc.size() || pf >= sp.size())
+                    continue;
+
+                auto actionToText = [](FkAction a){
+                    switch(a){
+                    case FkAction::Restrict: return "Restrict";
+                    case FkAction::Cascade:  return "Cascade";
+                    case FkAction::SetNull:  return "SetNull";
+                    }
+                    return "Restrict";
+                };
+
+                const QString tip = QString("%1.%2 → %3.%4\nON DELETE %5 | ON UPDATE %6")
+                                        .arg(fk.childTable, sc[cf].name,
+                                             fk.parentTable, sp[pf].name,
+                                             actionToText(fk.onDelete),
+                                             actionToText(fk.onUpdate));
+
+                auto* e = new RelationEdge(cnode, cf, pnode, pf, tip);
+                scene_->addItem(static_cast<QGraphicsItem*>(e));
+                edges_.push_back(e);
             }
-        };
-
-        // datos mock
-        QStringList alumno    = { "IdAlumno", "NombreAlumno", "EdadAlumno", "AlturaAlumno" };
-        QStringList matricula = { "IdMatricula", "IdAlumno", "FechaMatricula" };
-
-        drawTable(boxA, "Alumno",    alumno,    0);
-        drawTable(boxB, "Matricula", matricula, 0);
-
-        // flecha relación Alumno.IdAlumno -> Matricula.IdAlumno
-        QPoint a = QPoint(boxA.right(), boxA.center().y()+6);
-        QPoint b = QPoint(boxB.left(),  boxB.center().y()-6);
-
-        p.setPen(QPen(QColor("#444"), 2));
-        QPainterPath path;
-        path.moveTo(a);
-        int midX = (a.x() + b.x())/2;
-        path.lineTo(midX, a.y());
-        path.lineTo(midX, b.y());
-        path.lineTo(b);
-        p.drawPath(path);
-
-        auto drawArrow = [&](const QPoint& tip, const QPoint& from){
-            const double ang = std::atan2(tip.y()-from.y(), tip.x()-from.x());
-            const double len = 10.0;
-            QPointF p1 = tip + QPointF(-len*std::cos(ang-0.35), -len*std::sin(ang-0.35));
-            QPointF p2 = tip + QPointF(-len*std::cos(ang+0.35), -len*std::sin(ang+0.35));
-            QPolygonF tri; tri << tip << p1 << p2;
-            p.setBrush(QColor("#444"));
-            p.drawPolygon(tri);
-        };
-        drawArrow(b, QPoint(midX, b.y()));
+        }
+        scene_->setSceneRect(scene_->itemsBoundingRect().marginsAdded(QMarginsF(60,60,60,60)));
     }
 };
+
+
 
 ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("MiniAccess — Shell");
@@ -602,6 +912,8 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     auto *stack = new QStackedWidget;
     stack->setFixedSize(kRightW, kStackH);
     stack->setStyleSheet("background:white; border:1px solid #b0b0b0;");
+    stack->setObjectName("contentStack");
+
 
     auto makePage = [](const QString& text){
         auto *lbl = new QLabel(text);
@@ -615,12 +927,31 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         layout->addWidget(lbl);
         layout->addStretch();
         return page;
-    };stack->addWidget(tablesPage);            // index 0 (Design)
-    stack->addWidget(recordsPage);           // index 1 (Datasheet)
+
+
+
+
+    };
+
+    stack->addWidget(tablesPage);   // index 0 (Design)
+    stack->addWidget(recordsPage);  // index 1 (Datasheet)
     auto *queriesPage   = makePage("Consultas (mock)");
-    auto *relationsPage = new RelationsMockWidget;   // relaciones (mock)
-    stack->addWidget(queriesPage);           // index 2
-    stack->addWidget(relationsPage);         // index 3
+    auto *relationsPage = new RelationsPage;
+    stack->addWidget(relationsPage);
+
+    connect(relationsPage, &RelationsPage::requestAddRelation, this, [this, relationsPage, stack]{
+        if (showAddRelationDialog(this)) {
+            if (auto *relPage = qobject_cast<RelationsPage*>(relationsPage))
+                relPage->rebuildFromModel();
+        }
+    });
+    // relaciones
+    stack->addWidget(queriesPage);  // index 2
+
+
+
+
+
 
     auto *navigator = buildRecordNavigator(kRightW, kBottomReserveH, recordsPage);
     rightV->addWidget(stack);
@@ -721,17 +1052,8 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
             // "Save" se deja como placeholder (no aplica en el flujo actual)
         }
     }
-    // ====== Ribbon: Database Tools → navegar a Relaciones (mock) ======
-    if (auto *dbRibbon = ribbonStack->widget(2)) {
-        const auto btns = dbRibbon->findChildren<QToolButton*>();
-        for (auto *b : btns) {
-            if (b->text() == "Relationships") {
-                connect(b, &QToolButton::clicked, this, [this]{
-                    showAddRelationDialog(this);
-                });
-            }
-        }
-    }
+
+
 
     // ====== Enlazar estado de navegación (RecordsPage → barra inferior) ======
     auto posLbl   = navigator->findChild<QLabel*>("lblPos");
@@ -922,9 +1244,22 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
             });
         } else if (t == "Relationships") {
             connect(b, &QToolButton::clicked, this, [this]{
-                showAddRelationDialog(this);  // ← abre el diálogo y registra la FK
-            });
+                // Buscar específicamente el stack de contenido
+                auto *content = this->findChild<QStackedWidget*>("contentStack");
+                if (!content) return;
 
+                RelationsPage* relPage = nullptr;
+                for (int i = 0; i < content->count(); ++i) {
+                    if (auto rp = qobject_cast<RelationsPage*>(content->widget(i))) {
+                        relPage = rp; break;
+                    }
+                }
+                if (!relPage) return;
+
+                relPage->startBlank();
+                relPage->rebuildFromModel();
+                content->setCurrentWidget(relPage);
+            });
         } else if (t == "Avail List") {
             connect(b, &QToolButton::clicked, this, [this]{
                 QMessageBox::information(this, "Database Tools",
@@ -940,3 +1275,5 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
 
     return wrap;
 }
+
+#include "shellwindow.moc"
