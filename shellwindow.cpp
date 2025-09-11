@@ -42,10 +42,11 @@
 #include <QMap>
 #include <cmath>
 #include <QVector2D>
-
-
-
-
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QCheckBox>
+#include <QMenu>
+#include <QGraphicsSceneContextMenuEvent>
 
 
 // Tamaños base
@@ -75,7 +76,8 @@ static QWidget* vSep(int h = 64) {
 }
 
 // Añade en shellwindow.cpp (ámbito anónimo)
-static bool showAddRelationDialog(QWidget* parent) {
+static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QString()) {
+
     auto &dm = DataModel::instance();
 
     QDialog dlg(parent);
@@ -87,6 +89,12 @@ static bool showAddRelationDialog(QWidget* parent) {
     const QStringList tables = dm.tables();
     cbChildTable.addItems(tables);
     cbParentTable.addItems(tables);
+
+    if (!tableHint.isEmpty()) {
+        int ix = cbChildTable.findText(tableHint);
+        if (ix >= 0) cbChildTable.setCurrentIndex(ix);
+    }
+
 
     auto refillCols = [&](QComboBox& tableCb, QComboBox& colCb){
         colCb.clear();
@@ -472,8 +480,11 @@ public:
     }
     QRectF boundingRect() const override { return rect_; }
 
+
+
 signals:
     void moved();
+     void requestNewRelation(const QString& table);
 
 protected:
     void paint(QPainter* p, const QStyleOptionGraphicsItem*, QWidget*) override {
@@ -523,6 +534,17 @@ protected:
         if (ch == ItemPositionHasChanged) emit moved();
         return QGraphicsObject::itemChange(ch, v);
     }
+
+protected:
+    void contextMenuEvent(QGraphicsSceneContextMenuEvent* e) override {
+        QMenu menu;
+        QAction* newRel = menu.addAction("Nueva relación…");
+        QAction* chosen = menu.exec(e->screenPos());
+        if (chosen == newRel) {
+            emit requestNewRelation(table_);  // avisar a RelationsPage
+        }
+    }
+
 
 private:
     QString table_;
@@ -663,6 +685,7 @@ public:
         connect(btnNewRel_, &QPushButton::clicked, this, [this]{
             emit requestAddRelation();  // lo maneja ShellWindow
         });
+
     }
 
     // Deja el canvas en blanco (como Access al abrir Relaciones)
@@ -682,11 +705,46 @@ public:
         scene_->setSceneRect(QRectF(0,0,1000,700));
     }
 
+    void addRelationEdge(const QString& childTable, int childCol,
+                         const QString& parentTable, int parentCol,
+                         FkAction onDelete, FkAction onUpdate)
+    {
+        TableNode* cnode = nodes_.value(childTable, nullptr);
+        TableNode* pnode = nodes_.value(parentTable, nullptr);
+        if (!cnode || !pnode) return;
+
+        const Schema sc = DataModel::instance().schema(childTable);
+        const Schema sp = DataModel::instance().schema(parentTable);
+
+        if (childCol < 0 || parentCol < 0 || childCol >= sc.size() || parentCol >= sp.size())
+            return;
+
+        auto actionToText = [](FkAction a){
+            switch(a){
+            case FkAction::Restrict: return "Restrict";
+            case FkAction::Cascade:  return "Cascade";
+            case FkAction::SetNull:  return "SetNull";
+            }
+            return "Restrict";
+        };
+
+        const QString tip = QString("%1.%2 → %3.%4\nON DELETE %5 | ON UPDATE %6")
+                                .arg(childTable, sc[childCol].name,
+                                     parentTable, sp[parentCol].name,
+                                     actionToText(onDelete),
+                                     actionToText(onUpdate));
+
+        auto* e = new RelationEdge(cnode, childCol, pnode, parentCol, tip);
+        scene_->addItem(e);
+        edges_.push_back(e);
+    }
     // Redibuja solo las aristas (se espera que los nodos ya estén en canvas)
     void rebuildFromModel() { redrawAll(true); }
 
+
 signals:
-    void requestAddRelation();  // se emite al pulsar "Nueva relación…"
+    void requestAddRelation(const QString& tableHint = QString());
+
 
 private:
     QGraphicsScene* scene_;
@@ -704,15 +762,25 @@ private:
             list_->addItem(t);
     }
 
+
     void addTableNode(const QString& table) {
         if (nodes_.contains(table)) return;
+
         auto* n = new TableNode(table, DataModel::instance().schema(table));
+        connect(n, &TableNode::requestNewRelation, this, [this](const QString& table){
+            emit requestAddRelation(table);  // reemite hacia ShellWindow con la tabla como hint
+        });
+
         scene_->addItem(n);
         const int count = nodes_.size();
-        n->setPos(40 + (count%3)*300, 40 + (count/3)*220);
+        n->setPos(40 + (count % 3) * 300, 40 + (count / 3) * 220);
         nodes_.insert(table, n);
-        redrawAll();
+
+        // ❌ Ya no llamamos a redrawAll() para evitar relaciones automáticas.
+        // ✅ Solo ajustamos el área visible del canvas.
+        scene_->setSceneRect(scene_->itemsBoundingRect().marginsAdded(QMarginsF(60,60,60,60)));
     }
+
 
     void redrawAll(bool clearEdgesOnly=false) {
         // Eliminar aristas anteriores
@@ -939,12 +1007,27 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     auto *relationsPage = new RelationsPage;
     stack->addWidget(relationsPage);
 
-    connect(relationsPage, &RelationsPage::requestAddRelation, this, [this, relationsPage, stack]{
-        if (showAddRelationDialog(this)) {
-            if (auto *relPage = qobject_cast<RelationsPage*>(relationsPage))
-                relPage->rebuildFromModel();
-        }
-    });
+    connect(relationsPage, &RelationsPage::requestAddRelation, this,
+            [this, relationsPage](const QString& tableHint){
+                if (showAddRelationDialog(this, tableHint)) {
+                    // Obtener la última relación añadida y dibujarla
+                    auto& dm = DataModel::instance();
+                    const auto& allTables = dm.tables();
+                    for (const auto& t : allTables) {
+                        const auto& fks = dm.relationshipsFor(t);
+                        if (!fks.isEmpty()) {
+                            const auto& fk = fks.last();  // la última creada
+                            relationsPage->addRelationEdge(
+                                fk.childTable, fk.childCol,
+                                fk.parentTable, fk.parentCol,
+                                fk.onDelete, fk.onUpdate
+                                );
+                        }
+                    }
+                }
+            });
+
+
     // relaciones
     stack->addWidget(queriesPage);  // index 2
 
@@ -1257,7 +1340,6 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
                 if (!relPage) return;
 
                 relPage->startBlank();
-                relPage->rebuildFromModel();
                 content->setCurrentWidget(relPage);
             });
         } else if (t == "Avail List") {
