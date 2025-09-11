@@ -17,13 +17,48 @@
 #include <QSpinBox>
 #include <QKeyEvent>
 #include <QIntValidator>
+#include <QScrollBar>  // <- asegurate de tener este include arriba
+
 
 
 
 /* ===== Helpers ===== */
+
+static int parseDecPlaces(const QString& fmt) {
+    QRegularExpression rx("\\bdp=(\\d)\\b");
+    auto m = rx.match(fmt);
+    int dp = m.hasMatch() ? m.captured(1).toInt() : 2;
+    return std::clamp(dp, 0, 4);
+}
+static QString baseFormatKey(const QString& fmt) {
+    const int i = fmt.indexOf("|dp=");
+    return (i >= 0) ? fmt.left(i).trimmed() : fmt.trimmed();
+}
+
 static QStringList kTypes() {
     // Orden parecido a Access
-    return {"Autonumeración","Número","Fecha/Hora","Moneda","Sí/No","Texto corto","Texto largo"};
+    return {"Autonumeración","Número","Fecha","Moneda","Sí/No","Texto corto","Texto largo"};
+}
+
+// === Helpers de nombres (case-insensitive) ===
+static bool nameExistsCI(const Schema& s, const QString& name, int exceptRow = -1) {
+    const QString key = name.trimmed().toLower();
+    if (key.isEmpty()) return false;
+    for (int i = 0; i < s.size(); ++i) {
+        if (i == exceptRow) continue;
+        if (s[i].name.trimmed().toLower() == key) return true;
+    }
+    return false;
+}
+
+static QString genUniqueName(const Schema& s, const QString& base) {
+    const QString raw = base.trimmed().isEmpty() ? QStringLiteral("Campo") : base.trimmed();
+    QString candidate = raw;
+    int n = 1;
+    while (nameExistsCI(s, candidate)) {
+        candidate = raw + QString::number(n++);
+    }
+    return candidate;
 }
 
 // Igual que en DataModel, pero local a esta vista
@@ -146,10 +181,22 @@ void TablesPage::setupUi() {
     propFormato = new QComboBox(general);
     propFormato->setEditable(true);
     propFormato->setInsertPolicy(QComboBox::NoInsert);
+
+    // --- Decimal places (para Número) ---
+    propDecimalPlaces = new QComboBox(general);
+    propDecimalPlaces->addItems({"0","1","2","3","4"});
+    propDecimalPlaces->setCurrentText("2");
+    propDecimalPlaces->setEditable(false);
+
+
     if (propFormato->lineEdit()) propFormato->lineEdit()->setPlaceholderText("Formato: 0, 0.00, #,##0.00, etc.");
+
     propAutoFormato = new QComboBox(general);          // ← lo usamos como **Tamaño**
     propValorPred   = new QLineEdit(general);
     propRequerido   = new QCheckBox("Requerido", general);
+
+    propAutoNewValues = new QComboBox(general);
+    propAutoNewValues->addItems({ "Increment" });
 
     propTextSize    = new QLineEdit(general);
     propTextSize->setValidator(new QIntValidator(1, 255, propTextSize));
@@ -159,13 +206,15 @@ void TablesPage::setupUi() {
 
 
     // (Opcionales que ya no se muestran)
-    propAutoNewValues = new QComboBox(general); propAutoNewValues->hide();
     propTitulo        = new QLineEdit(general);  propTitulo->hide();
     propIndexado      = new QComboBox(general);  propIndexado->hide();
 
     // Filas (obs: “Tamaño:”)
     fl->addRow("Formato:", propFormato);      // solo para Autonum y Número
     fl->addRow("Tamaño:",  propAutoFormato);  // Autonum y Número
+    fl->addRow("New values:", propAutoNewValues);   // ← NUEVO (solo visible en Autonum)
+    fl->addRow("Decimal places:", propDecimalPlaces);
+
     fl->addRow("Field size:", propTextSize);
     fl->addRow("Valor predeterminado:", propValorPred);
     fl->addRow("", propRequerido);
@@ -218,6 +267,12 @@ void TablesPage::setupUi() {
     // Propiedades -> datos del campo
     connect(propFormato, &QComboBox::currentTextChanged, this, &TablesPage::onPropertyChanged);
     connect(propAutoFormato,   &QComboBox::currentTextChanged, this, [=]{ updateAutoControlsSensitivity(); onPropertyChanged(); });
+    // Conexiones
+    connect(propDecimalPlaces, &QComboBox::currentTextChanged,
+            this, &TablesPage::onPropertyChanged);
+
+    connect(propAutoNewValues, &QComboBox::currentTextChanged,
+            this, &TablesPage::onPropertyChanged);
     connect(propValorPred, &QLineEdit::editingFinished, this, &TablesPage::onPropertyChanged);
     connect(propTextSize, &QLineEdit::editingFinished, this, &TablesPage::onPropertyChanged);
 
@@ -257,9 +312,15 @@ void TablesPage::applyQss() {
     }
     QTableView::item:selected { background:#d9e1f2; color:#000; }
     QTableView::item:hover { background:#f5f7fb; }
-    QComboBox QAbstractItemView {
-        background:#ffffff; border:1px solid #bfbfbf; selection-background-color:#d9e1f2;
-    }
+QComboBox QAbstractItemView {
+    background:#ffffff;
+    border:1px solid #bfbfbf;
+    color:#000;                             /* ← texto negro */
+    selection-background-color:#d9e1f2;     /* ← fondo selección */
+    selection-color:#000;                   /* ← texto negro al seleccionar */
+    font-family: "Menlo","Consolas","Courier New",monospace; /* ← monoespaciada para alinear */
+}
+
     QTabWidget::pane { border:1px solid #cfcfcf; border-radius:3px; top:-1px; }
     QTabBar::tab { background:#f7f7f7; border:1px solid #cfcfcf; border-bottom:0;
                    padding:6px 10px; margin-right:2px; }
@@ -321,8 +382,14 @@ void TablesPage::loadTableToUi(const QString &tableName) {
         connectRowEditors(i);
     }
 
-    if (fieldsTable->rowCount() > 0) fieldsTable->selectRow(0);
-    else                              clearPropsUi();
+    if (fieldsTable->rowCount() > 0) {
+        int sel = (m_activeRow >= 0 && m_activeRow < fieldsTable->rowCount())
+        ? m_activeRow : 0;
+        fieldsTable->selectRow(sel);
+    } else {
+        clearPropsUi();
+    }
+
 }
 
 void TablesPage::buildRowFromField(int row, const FieldDef &fd) {
@@ -361,12 +428,18 @@ bool TablesPage::applySchemaAndRefresh(const Schema& s, int preserveRow)
 
     const int row = (preserveRow >= 0) ? preserveRow : fieldsTable->currentRow();
 
+    // --- preservar SOLO scroll vertical ---
+    const int keepV = fieldsTable->verticalScrollBar()->value();
+
     // Bloquea eventos de selección durante la recarga para evitar saltar a la fila 0
     {
         QSignalBlocker bSel(fieldsTable->selectionModel());
         loadTableToUi(m_currentTable);               // reconstruye grilla sin selectionChanged
         if (row >= 0 && row < fieldsTable->rowCount())
             fieldsTable->selectRow(row);             // re-selecciona la fila del usuario
+
+        // --- restaurar scroll vertical ---
+        fieldsTable->verticalScrollBar()->setValue(keepV);
     }
 
     // Refresca el panel para la fila realmente seleccionada
@@ -383,36 +456,100 @@ bool TablesPage::applySchemaAndRefresh(const Schema& s, int preserveRow)
 }
 
 
-void TablesPage::connectRowEditors(int row) {
-    // Tipo
-    auto *typeCb = qobject_cast<QComboBox*>(fieldsTable->cellWidget(row,1));
-    QObject::connect(typeCb, &QComboBox::currentTextChanged, this, [=](const QString &t){
-        if (row < 0 || row >= m_currentSchema.size()) return;
-        Schema s = m_currentSchema;
-        s[row].type = t;
-        updateGeneralUiForType(t);     // Actualiza panel General en caliente
-        applySchemaAndRefresh(s, row);
-    });
 
-    // PK (columna 2)
-    auto *wrap = fieldsTable->cellWidget(row,2);
-    auto *pkChk = wrap->findChild<QCheckBox*>();
-    QObject::connect(pkChk, &QCheckBox::toggled, this, [=](bool on){
-        if (row < 0 || row >= m_currentSchema.size()) return;
-        Schema s = m_currentSchema;
-        s[row].pk = on;
-        applySchemaAndRefresh(s, row);
-    });
+void TablesPage::connectRowEditors(int row) {
+    // ----- Tipo (columna 1) -----
+    auto *typeCb = qobject_cast<QComboBox*>(fieldsTable->cellWidget(row, 1));
+    if (typeCb) {
+        QObject::connect(typeCb, &QComboBox::currentTextChanged, this, [=](const QString &t){
+            if (row < 0 || row >= m_currentSchema.size()) return;
+
+            Schema s = m_currentSchema;
+
+            // Tipo anterior y nuevo (normalizados)
+            const QString oldNt = normType(s[row].type);
+            const QString newNt = normType(t);
+
+            // Ajusta tamaño por defecto cuando cambias entre short/long text
+            if (newNt == "texto_largo") {
+                // Si venimos de short text o size inválido, fija 64000
+                if (oldNt == "texto" || s[row].size <= 0 || s[row].size > 64000) {
+                    s[row].size = 64000;
+                }
+            } else if (newNt == "texto") {
+                // Si venimos de long text o size inválido, fija 255
+                if (oldNt == "texto_largo" || s[row].size <= 0 || s[row].size > 255) {
+                    s[row].size = 255;
+                }
+            }
+            // Cambia el tipo
+            s[row].type = t;
+
+            // Refresca panel General y aplica schema
+            updateGeneralUiForType(t);
+            applySchemaAndRefresh(s, row);
+        });
+    }
+
+    // ----- PK (columna 2) -----
+    if (auto *wrap = fieldsTable->cellWidget(row, 2)) {
+        if (auto *pkChk = wrap->findChild<QCheckBox*>()) {
+            QObject::connect(pkChk, &QCheckBox::toggled, this, [=](bool on){
+                if (row < 0 || row >= m_currentSchema.size()) return;
+                Schema s = m_currentSchema;
+                s[row].pk = on;
+                applySchemaAndRefresh(s, row);
+            });
+        }
+    }
 }
+
 
 void TablesPage::onNameItemEdited(QTableWidgetItem *it) {
     if (!it || it->column() != 0) return;
-    int row = it->row();
+    const int row = it->row();
     if (row < 0 || row >= m_currentSchema.size()) return;
+
+    const QString newName = it->text().trimmed();
+    const QString oldName = m_currentSchema[row].name;
+
+    // Vacío: no aceptamos; vuelve a editar el mismo item
+    if (newName.isEmpty()) {
+        QMessageBox::warning(this, tr("Nombre inválido"),
+                             tr("El nombre del campo no puede estar vacío."));
+        {
+            QSignalBlocker blk(fieldsTable);
+            it->setText(oldName);
+        }
+        QTimer::singleShot(0, this, [=]{
+            fieldsTable->setCurrentCell(row, 0);
+            fieldsTable->editItem(fieldsTable->item(row, 0));
+        });
+        return;
+    }
+
+    // Duplicado (case-insensitive) en otra fila: NO guardes, fuerza a corregir
+    if (nameExistsCI(m_currentSchema, newName, row)) {
+        QMessageBox::warning(this, tr("Nombre duplicado"),
+                             tr("Ya existe un campo llamado \"%1\".\n"
+                                "Cambia el nombre para continuar.").arg(newName));
+        {
+            QSignalBlocker blk(fieldsTable);
+            it->setText(oldName);           // revertimos visualmente
+        }
+        QTimer::singleShot(0, this, [=]{
+            fieldsTable->setCurrentCell(row, 0);
+            fieldsTable->editItem(fieldsTable->item(row, 0));  // vuelve a modo edición
+        });
+        return;
+    }
+
+    // OK → aplica al esquema y refresca preservando la fila
     Schema s = m_currentSchema;
-    s[row].name = it->text();
+    s[row].name = newName;
     applySchemaAndRefresh(s, row);
 }
+
 
 void TablesPage::onSelectTable() {
     const auto name = currentTableName();
@@ -425,23 +562,33 @@ void TablesPage::onFieldSelectionChanged() {
     if (m_updatingUi) return;
     int row = fieldsTable->currentRow();
     if (row < 0 || row >= m_currentSchema.size()) { clearPropsUi(); return; }
+    m_activeRow = row;
+
     loadFieldPropsToUi(m_currentSchema[row]);
     updateGeneralUiForType(m_currentSchema[row].type);   // Ajusta visibilidad por tipo
 }
 
 void TablesPage::loadFieldPropsToUi(const FieldDef &fd) {
-    QSignalBlocker b1(propFormato), b3(propTitulo),
+    QSignalBlocker b1(propFormato), b2(propDecimalPlaces),  b3(propTitulo),
         b4(propValorPred), b7(propIndexado), b8(propRequerido);
-    propFormato->setCurrentText(fd.formato);
-    propAutoFormato->setCurrentText(fd.autoSubtipo);
+
+    // NUEVO: usa la clave “limpia” y saca los decimales del sufijo |dp=X
+    const QString rawFmt = fd.formato;
+    propFormato->setCurrentText(baseFormatKey(rawFmt));
+    propDecimalPlaces->setCurrentText(QString::number(parseDecPlaces(rawFmt)));    propAutoFormato->setCurrentText(fd.autoSubtipo);
     propAutoFormato->setCurrentText(fd.autoSubtipo.isEmpty() ? "Long Integer" : fd.autoSubtipo);
     propAutoNewValues->setCurrentText(fd.autoNewValues.isEmpty() ? "Increment" : fd.autoNewValues);
 
-    // Field size (solo aplica a Texto corto)
-    if (normType(fd.type) == "texto") {
-        // Texto corto: size en propTextSize (QLineEdit)
+    // Field size (aplica a Texto corto y Texto largo)
+    const QString nt = normType(fd.type);
+    if (nt == "texto") {
         const int sz = (fd.size <= 0 || fd.size > 255) ? 255 : fd.size;
-        propTextSize->setText(QString::number(sz));    }
+        propTextSize->setText(QString::number(sz));
+    } else if (nt == "texto_largo") {
+        const int sz = (fd.size <= 0 || fd.size > 64000) ? 64000 : fd.size;
+        propTextSize->setText(QString::number(sz));
+    }
+
     propTitulo->setText(fd.titulo);
     propValorPred->setText(fd.valorPredeterminado);
     propRequerido->setChecked(fd.requerido);
@@ -460,13 +607,17 @@ void TablesPage::loadFieldPropsToUi(const FieldDef &fd) {
         if (propFormato->lineEdit()) propFormato->lineEdit()->setPlaceholderText("Texto sin límite fijo");
 
     } else if (t == "numero") {
-        if (propFormato->lineEdit()) propFormato->lineEdit()->setPlaceholderText("Formato/decimales: Auto, 0, 0.00, #,##0.00");
+        if (propFormato->lineEdit())
+            propFormato->lineEdit()->setPlaceholderText("Lps / $ / €  (p.ej. #,##0.00)");
+
 
     } else if (t == "moneda") {
         propFormato->setPlaceholderText("Lps / $ / €  (p.ej. L #,##0.00)");
 
     } else if (t == "fecha_hora") {
-        if (propFormato->lineEdit()) propFormato->lineEdit()->setPlaceholderText("dd/MM/yy, yyyy-MM-dd, etc.");
+        if (propFormato->lineEdit())
+            propFormato->lineEdit()->setPlaceholderText("DD-MM-YY, DD/MM/YY, DD/MESTEXTO/YYYY");
+
 
     } else if (t == "booleano") {
         propFormato->setPlaceholderText("Sí/No (o Verdadero/Falso)");
@@ -475,47 +626,90 @@ void TablesPage::loadFieldPropsToUi(const FieldDef &fd) {
 }
 
 void TablesPage::pullPropsFromUi(FieldDef &fd) {
-    fd.formato            = propFormato->currentText();
-    // Solo tiene sentido en Autonumeración, pero guardar no hace daño
-    fd.autoSubtipo        = propAutoFormato->currentText();
-    fd.autoNewValues      = propAutoNewValues->currentText();
-    fd.titulo             = propTitulo->text();
-    fd.valorPredeterminado= propValorPred->text();
-    fd.requerido          = propRequerido->isChecked();
-    fd.indexado           = propIndexado->currentText();
+    {
+        const QVariant key = propFormato->currentData();
+        QString base = key.isValid() ? key.toString() : propFormato->currentText();
+        int dp = std::clamp(propDecimalPlaces->currentText().toInt(), 0, 4);
 
-    // Tamaño aplica solo a Texto corto
-    if (normType(fd.type) == "texto") {
+        // Si el subtipo del número es entero, fuerza dp=0
+        const QString nt = normType(fd.type);
+        const QString sz = propAutoFormato->currentText().trimmed().toLower();
+        const bool isInt = (nt == "numero") &&
+                           (sz.contains("byte") || sz.contains("entero") || sz.contains("integer") || sz.contains("long"));
+        if (isInt) dp = 0;
+
+        fd.formato = base + QString("|dp=%1").arg(dp);
+    }
+
+    // Solo tiene sentido en Autonumeración, pero guardar no hace daño
+    fd.autoSubtipo         = propAutoFormato->currentText();
+    fd.autoNewValues       = propAutoNewValues->currentText();
+    fd.titulo              = propTitulo->text();
+    fd.valorPredeterminado = propValorPred->text();
+    fd.requerido           = propRequerido->isChecked();
+    fd.indexado            = propIndexado->currentText();
+
+    // Tamaño aplica a Texto corto y Texto largo
+    const QString nt = normType(fd.type);
+    if (nt == "texto" || nt == "texto_largo") {
         bool ok = false;
         int v = propTextSize->text().toInt(&ok);
-        if (!ok) v = 255;
-        fd.size = std::max(1, std::min(v, 255));
-        }
+        if (!ok) v = (nt == "texto" ? 255 : 64000);
+        const int maxSz = (nt == "texto" ? 255 : 64000);
+        fd.size = std::max(1, std::min(v, maxSz));
+    }
+
+    // Si luego agregas FieldDef.decimales, guarda aquí:
+    // if (normType(fd.type) == "numero") {
+    //     fd.decimales = qBound(0, propDecimalPlaces->currentText().toInt(), 4);
+    // }
 }
+
 
 // #include <QTimer>
 void TablesPage::onPropertyChanged() {
     if (m_updatingUi) return;
-    const int row = fieldsTable->currentRow();
+
+    const int row = (m_activeRow >= 0 ? m_activeRow : fieldsTable->currentRow());
     if (row < 0 || row >= m_currentSchema.size()) return;
 
-    // Recoge cambios actuales de la UI
+    // ¿Quién disparó?
+    QObject* src = sender();
+    enum class Src {None, Formato, DecPlaces, AutoFormato, ValorPred, TextSize};
+    Src who = Src::None;
+    if      (src == propFormato)         who = Src::Formato;
+    else if (src == propDecimalPlaces)   who = Src::DecPlaces;
+    else if (src == propAutoFormato)     who = Src::AutoFormato;
+    else if (src == propValorPred)       who = Src::ValorPred;
+    else if (src == propTextSize)        who = Src::TextSize;
+
+    // Construye nuevo schema desde la UI
     Schema s = m_currentSchema;
-    pullPropsFromUi(s[row]);  // ya existe :contentReference[oaicite:6]{index=6}
+    pullPropsFromUi(s[row]);
 
-    // Recuerda dónde estaba el foco para restaurarlo luego
-    QWidget* hadFocus = QApplication::focusWidget();
+    // 🔒 Bloquea reentradas durante TODO el refresh
+    m_updatingUi = true;
+    QScopeGuard done{[&]{ m_updatingUi = false; }};
 
-    // Encola la recarga para evitar destruir widgets durante la señal
-    QTimer::singleShot(0, this, [=]{
-        applySchemaAndRefresh(s, row);         // recarga todo :contentReference[oaicite:7]{index=7}
-        if (hadFocus == propValorPred && propValorPred) propValorPred->setFocus();
-        else if (hadFocus == propFormato && propFormato) {
-            if (auto *le = propFormato->lineEdit()) le->setFocus();
-            else propFormato->setFocus();
-        } else if (hadFocus == propTextSize && propTextSize) propTextSize->setFocus();
-    });
+    // (opcional) bloquea señales de combos mientras refrescas
+    QSignalBlocker b1(propFormato);
+    QSignalBlocker b2(propDecimalPlaces);
+    QSignalBlocker b3(propAutoFormato);
+
+    // Refresca sin reentrar
+    applySchemaAndRefresh(s, row);
+
+    // Restaura el foco al control que originó el cambio
+    switch (who) {
+    case Src::Formato:       if (propFormato)       propFormato->setFocus();       break;
+    case Src::DecPlaces:     if (propDecimalPlaces) propDecimalPlaces->setFocus(); break;
+    case Src::AutoFormato:   if (propAutoFormato)   propAutoFormato->setFocus();   break;
+    case Src::ValorPred:     if (propValorPred)     propValorPred->setFocus();     break;
+    case Src::TextSize:      if (propTextSize)      propTextSize->setFocus();      break;
+    case Src::None: default: break;
+    }
 }
+
 
 
 void TablesPage::clearPropsUi() {
@@ -534,13 +728,14 @@ void TablesPage::onAddField() {
     Schema s = m_currentSchema;
 
     FieldDef fd;
-    fd.name = "NuevoCampo";
+    fd.name = genUniqueName(s, "NuevoCampo");   // <- ahora único (CI)
     fd.type = "Texto corto";
-    fd.size = 255; // el modelo lo usará si aplica; no se muestra en la UI
-    s.append(fd);
+    fd.size = 255;
 
+    s.append(fd);
     applySchemaAndRefresh(s, s.size()-1);
 }
+
 
 void TablesPage::onRemoveField() {
     if (m_currentTable.isEmpty()) return;
@@ -631,9 +826,25 @@ void TablesPage::updateGeneralUiForType(const QString& type)
     int row = fieldsTable ? fieldsTable->currentRow() : -1;
     if (row >= 0 && row < m_currentSchema.size()) isPk = m_currentSchema[row].pk;
 
+    auto syncRequired = [&](bool isPk, int row){
+        setRowVisible(fl, propRequerido, true);
+        QSignalBlocker bReq(propRequerido);
+        bool req = isPk ? true
+                        : ((row >= 0 && row < m_currentSchema.size())
+                               ? m_currentSchema[row].requerido
+                               : false);
+        propRequerido->setChecked(req);
+        propRequerido->setEnabled(!isPk);
+    };
+
+
     // Oculta todo por defecto
     setRowVisible(fl, propFormato,     false);
     setRowVisible(fl, propAutoFormato, false);
+    setRowVisible(fl, propAutoNewValues, false);   // ocúltalo por defecto
+    setRowVisible(fl, propDecimalPlaces, false);
+
+
     setRowVisible(fl, propValorPred,   false);
     setRowVisible(fl, propRequerido,   false);
     setRowVisible(fl, propTextSize,    false);
@@ -645,50 +856,121 @@ void TablesPage::updateGeneralUiForType(const QString& type)
 
     // Mostrar según tipo
     if (t == "autonumeracion") {
-        // Tamaño = Long Integer fijo
+        // Reseteo liviano
+        propAutoFormato->clear();
+
+        // ---- TAMAÑO ----
+        propAutoFormato->clear();
         propAutoFormato->addItem("Long Integer");
         propAutoFormato->setCurrentIndex(0);
         propAutoFormato->setEnabled(false);
-
-        // Formato (presentación) + Tamaño
-        setRowVisible(fl, propFormato,     true);
         setRowVisible(fl, propAutoFormato, true);
-        propFormato->setEditable(false);
+
+        // ---- FORMATO ---- (no se usa en autonum)
+        setRowVisible(fl, propFormato, false);
+        if (propFormato) { propFormato->clear(); propFormato->clearEditText(); }
+
+        // ---- NEW VALUES ---- (solo "Increment" y bloqueado)
+        setRowVisible(fl, propAutoNewValues, true);
+        propAutoNewValues->blockSignals(true);
+        propAutoNewValues->clear();
+        propAutoNewValues->addItem("Increment");
+        propAutoNewValues->setCurrentIndex(0);
+        propAutoNewValues->setEnabled(false);        // ← así NO se despliega
+        propAutoNewValues->setFocusPolicy(Qt::NoFocus);
+        propAutoNewValues->blockSignals(false);
+
+        // ---- REQUERIDO: visible siempre; si es PK => marcado y bloqueado ----
+        setRowVisible(fl, propRequerido, true);
+
+        bool req = isPk ? true
+                        : ((row >= 0 && row < m_currentSchema.size()) ? m_currentSchema[row].requerido : false);
+
+        QSignalBlocker bReq(propRequerido);   // evita onPropertyChanged durante el set
+        propRequerido->setChecked(req);
+        propRequerido->setEnabled(!isPk);
+
+
+
+        // nada de valor predeterminado / field size
+        setRowVisible(fl, propValorPred, false);
+        setRowVisible(fl, propTextSize,  false);
+
+        return;
+    }
+
+    if (normType(type) == "numero") {
+        // ---- TAMAÑO (subtipo numérico) ----
+        setRowVisible(fl, propAutoFormato, true);
+        propAutoFormato->blockSignals(true);
+        propAutoFormato->clear();
+        propAutoFormato->addItems({"Byte","Entero","Decimal","Doble"});
+
+        int r = fieldsTable ? fieldsTable->currentRow() : -1;
+        QString saved = (r >= 0 && r < m_currentSchema.size() && !m_currentSchema[r].autoSubtipo.isEmpty())
+                            ? m_currentSchema[r].autoSubtipo
+                            : QStringLiteral("Entero");
+        const QMap<QString, QString> alias = {
+            {"Integer","Entero"}, {"Long Integer","Entero"},
+            {"Single","Decimal"}, {"Double","Doble"}, {"Decimal","Decimal"}
+        };
+        if (alias.contains(saved)) saved = alias.value(saved);
+        if (propAutoFormato->findText(saved) < 0) saved = "Entero";
+        propAutoFormato->setCurrentText(saved);
+        propAutoFormato->blockSignals(false);
+
+        // ---- FORMATO (igual a Moneda) ----
+        setRowVisible(fl, propFormato, true);
+        propFormato->blockSignals(true);
         propFormato->clear();
-        propFormato->addItems({"General Number","Currency","Euro","Fixed",
-                               "Standard","Percent","Scientific"});
-        {
-            QString fmt;
-            int r = fieldsTable ? fieldsTable->currentRow() : -1;
-            if (r >= 0 && r < m_currentSchema.size()) fmt = m_currentSchema[r].formato.trimmed();
-            if (fmt.isEmpty()) fmt = QStringLiteral("General Number");
-            if (propFormato->findText(fmt) < 0) propFormato->addItem(fmt);
-            propFormato->setCurrentText(fmt);
-        }
-        if (!isPk) setRowVisible(fl, propRequerido, false); // PK siempre no requerido
+
+        QStringList keys = {"LPS","USD","EUR","Millares"};
+        int pad = 0; for (const auto& k : keys) pad = qMax(pad, k.size());
+        auto addFmt = [&](const QString& key, const QString& sample){
+            const QString left = key.leftJustified(pad + 2, QChar(' '));
+            propFormato->addItem(left + sample, key);  // userData = clave limpia
+        };
+        addFmt("LPS",      "L 3,456.79");
+        addFmt("USD",      "$3,456.79");
+        addFmt("EUR",      "€3,456.79");
+        addFmt("Millares", "3,456.79");
+
+        const QString savedFmt = (r >= 0 && r < m_currentSchema.size())
+                                     ? m_currentSchema[r].formato.trimmed()
+                                     : QString();
+        const QString fmt = baseFormatKey(savedFmt).isEmpty()
+                                ? QStringLiteral("Millares")
+                                : baseFormatKey(savedFmt);
+
+        int ix = 0;
+        for (int i = 0; i < propFormato->count(); ++i)
+            if (propFormato->itemData(i).toString() == fmt) { ix = i; break; }
+        propFormato->setCurrentIndex(ix);
+
+        propFormato->blockSignals(false);
+
+        setRowVisible(fl, propDecimalPlaces, true);
+        propDecimalPlaces->blockSignals(true);
+        const int dp = parseDecPlaces(savedFmt);   // usa el mismo savedFmt de arriba
+        propDecimalPlaces->setCurrentText(QString::number(dp));
+        propDecimalPlaces->blockSignals(false);
+
+
+        setRowVisible(fl, propTextSize,  false);
+        setRowVisible(fl, propValorPred, true);
+        syncRequired(isPk, row);
         return;
     }
 
-    if (t == "numero") {
-        propFormato->setEditable(true);
-        // Tamaño seleccionable
-        propAutoFormato->addItems({"Byte","Integer","Long Integer","Single","Double","Decimal"});
-        propAutoFormato->setCurrentText("Long Integer");
 
-        setRowVisible(fl, propFormato,     true);  // presentación
-        setRowVisible(fl, propAutoFormato, true);  // tamaño
-        propFormato->addItems({"General Number","Currency","Euro","Fixed",
-                               "Standard","Percent","Scientific"});
-        if (!isPk) setRowVisible(fl, propRequerido, true);
-        return;
-    }
+
 
     if (t == "texto") {
         propFormato->setEditable(true);
         // Solo aplica tamaño de texto (Field size) + valor predeterminado
         setRowVisible(fl, propTextSize,    true);
         setRowVisible(fl, propValorPred,   true);
-        if (!isPk) setRowVisible(fl, propRequerido, true);
+        syncRequired(isPk, row);
 
         // Ajusta el label
         if (auto *lbl = qobject_cast<QLabel*>(fl->labelForField(propTextSize)))
@@ -707,21 +989,164 @@ void TablesPage::updateGeneralUiForType(const QString& type)
         return;
     }
 
-    if (t == "fecha_hora") {
+    if (t == "texto_largo") {
         propFormato->setEditable(true);
-        setRowVisible(fl, propFormato,     true);
-        propFormato->addItems({"General Date","Long Date","Medium Date","Short Date",
-                               "Long Time","Medium Time","Short Time"});
-        if (!isPk) setRowVisible(fl, propRequerido, true);
+        // Igual que short text: mostramos Field size + valor predeterminado
+        setRowVisible(fl, propTextSize,  true);
+        setRowVisible(fl, propValorPred, true);
+        syncRequired(isPk, row);
+
+        // Ajusta el label
+        if (auto *lbl = qobject_cast<QLabel*>(fl->labelForField(propTextSize)))
+            lbl->setText("Field size:");
+
+        // ← AQUÍ (validador + placeholder)
+        propTextSize->setValidator(new QIntValidator(1, 64000, propTextSize));
+        propTextSize->setPlaceholderText(QStringLiteral("1..64000"));
+
+        // PONER EL NÚMERO EN EL QLINEEDIT
+        int idx = fieldsTable ? fieldsTable->currentRow() : -1;
+        if (idx >= 0 && idx < m_currentSchema.size()) {
+            int sz = m_currentSchema[idx].size > 0 ? m_currentSchema[idx].size : 64000;
+            if (sz < 1)      sz = 1;
+            if (sz > 64000)  sz = 64000;
+            propTextSize->setText(QString::number(sz));
+        } else {
+            propTextSize->setText(QStringLiteral("64000"));
+        }
         return;
     }
 
-    if (t == "moneda" || t == "booleano" || t == "texto_largo") {
-        propFormato->setEditable(true);
-        setRowVisible(fl, propValorPred,   true);
-        if (!isPk) setRowVisible(fl, propRequerido, true);
+
+    if (t == "fecha_hora") {
+        // Solo formatos de fecha (sin hora)
+        setRowVisible(fl, propFormato, true);
+
+        propFormato->blockSignals(true);
+        propFormato->clear();
+
+        QStringList keys = {"DD-MM-YY","DD/MM/YY","DD/MESTEXTO/YYYY"};
+        int pad = 0; for (const auto& k : keys) pad = qMax(pad, k.size());
+        auto addFmt = [&](const QString& key, const QString& sample){
+            const QString left = key.leftJustified(pad + 2, QChar(' '));
+            propFormato->addItem(left + sample, key);
+        };
+        addFmt("DD-MM-YY",        "31-12-25");
+        addFmt("DD/MM/YY",        "31/12/25");
+        addFmt("DD/MESTEXTO/YYYY","31/DICIEMBRE/2025");
+
+        // Por defecto: DD/MM/YY (o lo guardado)
+        int r = fieldsTable ? fieldsTable->currentRow() : -1;
+        QString fmt = "DD/MM/YY";
+        if (r >= 0 && r < m_currentSchema.size() && !m_currentSchema[r].formato.trimmed().isEmpty())
+            fmt = m_currentSchema[r].formato.trimmed();
+        int ix = 1; // DD/MM/YY
+        for (int i = 0; i < propFormato->count(); ++i)
+            if (propFormato->itemData(i).toString() == fmt) { ix = i; break; }
+        propFormato->setCurrentIndex(ix);
+        propFormato->blockSignals(false);
+
+        // Nada de tamaño/decimales; valor predet. sí lo puedes dejar
+        setRowVisible(fl, propTextSize,      false);
+        setRowVisible(fl, propDecimalPlaces, false);
+        setRowVisible(fl, propValorPred,     true);
+
+        // Requerido (si es PK queda bloqueado)
+        syncRequired(isPk, row);
         return;
     }
+
+
+
+    // ---- Sí/No (booleano) ----
+    if (t == "booleano") {
+        // Formato con ejemplos alineados (texto visible) y CLAVE en userData
+        setRowVisible(fl, propFormato, true);
+        propFormato->blockSignals(true);
+        propFormato->clear();
+
+        QStringList keys = {"True/False","Yes/No","On/Off"};
+        int pad = 0; for (const auto& k : keys) pad = qMax(pad, k.size());
+        auto addFmt = [&](const QString& key, const QString& sample){
+            const QString left = key.leftJustified(pad + 2, QChar(' '));
+            propFormato->addItem(left + sample, key);    // userData = key
+        };
+        addFmt("True/False", "True");
+        addFmt("Yes/No",     "Yes");
+        addFmt("On/Off",     "On");
+
+        // Seleccionar lo guardado (o True/False por defecto)
+        int r = fieldsTable ? fieldsTable->currentRow() : -1;
+        QString fmt = "True/False";
+        if (r >= 0 && r < m_currentSchema.size() && !m_currentSchema[r].formato.trimmed().isEmpty())
+            fmt = m_currentSchema[r].formato.trimmed();
+        int ix = -1;
+        for (int i = 0; i < propFormato->count(); ++i)
+            if (propFormato->itemData(i).toString() == fmt) { ix = i; break; }
+        propFormato->setCurrentIndex(ix < 0 ? 0 : ix);
+        propFormato->blockSignals(false);
+
+        // Mostrar lo que aplica
+        setRowVisible(fl, propValorPred,     true);
+        setRowVisible(fl, propDecimalPlaces, false);
+        setRowVisible(fl, propTextSize,      false);
+        setRowVisible(fl, propAutoFormato,   false);
+        setRowVisible(fl, propAutoNewValues, false);
+
+        // Requerido con regla PK
+        syncRequired(isPk, row);
+        return;
+    }
+
+    if (t == "moneda") {
+        setRowVisible(fl, propAutoFormato,   false);
+        setRowVisible(fl, propAutoNewValues, false);
+        setRowVisible(fl, propTextSize,      false);
+
+        // Formatos: LPS, USD, EUR, Millares
+        setRowVisible(fl, propFormato, true);
+        propFormato->blockSignals(true);
+        propFormato->clear();
+
+        QStringList keys = {"LPS","USD","EUR","Millares"};
+        int pad = 0; for (const auto& k : keys) pad = qMax(pad, k.size());
+        auto addFmt = [&](const QString& key, const QString& sample){
+            const QString left = key.leftJustified(pad + 2, QChar(' '));
+            propFormato->addItem(left + sample, key);   // userData = clave limpia
+        };
+        addFmt("LPS",      "L 3,456.79");
+        addFmt("USD",      "$3,456.79");
+        addFmt("EUR",      "€3,456.79");
+        addFmt("Millares", "3,456.79");
+
+        // Seleccionar lo guardado; si no hay, usar LPS
+        int r = fieldsTable ? fieldsTable->currentRow() : -1;
+        const QString savedFmt = (r >= 0 && r < m_currentSchema.size())
+                                     ? m_currentSchema[r].formato.trimmed()
+                                     : QString();
+        const QString fmt = baseFormatKey(savedFmt).isEmpty()
+                                ? QStringLiteral("LPS")
+                                : baseFormatKey(savedFmt);
+
+        int ix = 0;
+        for (int i = 0; i < propFormato->count(); ++i)
+            if (propFormato->itemData(i).toString() == fmt) { ix = i; break; }
+        propFormato->setCurrentIndex(ix);
+
+        propFormato->blockSignals(false);
+
+        setRowVisible(fl, propDecimalPlaces, true);
+        propDecimalPlaces->blockSignals(true);
+        const int dp = parseDecPlaces(savedFmt);
+        propDecimalPlaces->setCurrentText(QString::number(dp));
+        propDecimalPlaces->blockSignals(false);
+
+
+        setRowVisible(fl, propValorPred, true);
+        syncRequired(isPk, row);
+        return;
+    }
+
 }
 
 void TablesPage::updateAutoControlsSensitivity() {
@@ -738,7 +1163,7 @@ void TablesPage::makePropsUniformWidth()
     QList<QWidget*> fields = {
         propFormato, propAutoFormato, propAutoNewValues,
         propTitulo, propValorPred, propIndexado,
-        propTextSize
+        propTextSize, propDecimalPlaces
         // (Requerido queda fuera para que no se vea raro)
     };
 

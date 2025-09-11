@@ -60,6 +60,9 @@ private:
     QPushButton  *btnAddField = nullptr;
     QPushButton  *btnRemoveField = nullptr;
 
+
+    int m_activeRow = -1;
+
     // Propiedades abajo
     QTabWidget   *propTabs = nullptr;
 
@@ -68,8 +71,11 @@ private:
     QComboBox    *propAutoFormato = nullptr;  // Long Integer / Replication ID (solo auto)
     QLineEdit    *propValorPred = nullptr;
 
-    QLineEdit *propTextSize = nullptr;
-    QCheckBox    *propRequerido = nullptr;
+
+    QLineEdit   *propTextSize = nullptr;
+    QCheckBox   *propRequerido = nullptr;
+
+    QComboBox   *propDecimalPlaces = nullptr;   // <<--- NUEVO
 
     // (Opcionales, ya no se muestran)
     QComboBox    *propAutoNewValues = nullptr;
@@ -93,6 +99,7 @@ private:
     void pullPropsFromUi(FieldDef &fd);
     void buildRowFromField(int row, const FieldDef &fd);
     void connectRowEditors(int row);
+
     QString currentTableName() const;
 
     void clearPropsUi();
