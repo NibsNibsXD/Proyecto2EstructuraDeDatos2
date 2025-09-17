@@ -47,6 +47,11 @@
 #include <QCheckBox>
 #include <QMenu>
 #include <QGraphicsSceneContextMenuEvent>
+#include <functional>
+#include <QGraphicsSceneHoverEvent>
+#include <QGraphicsSceneMouseEvent>
+
+
 
 
 // Tamaños base
@@ -75,126 +80,421 @@ static QWidget* vSep(int h = 64) {
     return sep;
 }
 
-// Añade en shellwindow.cpp (ámbito anónimo)
-static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QString()) {
 
+static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QString()) {
     auto &dm = DataModel::instance();
 
     QDialog dlg(parent);
-    dlg.setWindowTitle("Nueva relación (FK)");
-    auto *form = new QFormLayout(&dlg);
+    dlg.setWindowTitle("Modificar relaciones");
+    dlg.setMinimumSize(560, 480);
 
-    QComboBox cbChildTable, cbChildCol, cbParentTable, cbParentCol, cbOnDelete, cbOnUpdate;
+    // ===== Layouts principales =====
+    auto *root = new QVBoxLayout(&dlg);
 
+    // --- fila superior: Tabla o consulta (hija / padre) ---
+    auto *top = new QWidget; auto *topHL = new QHBoxLayout(top); topHL->setContentsMargins(0,0,0,0);
+    auto *leftBox  = new QVBoxLayout; auto *leftW  = new QWidget;  leftW->setLayout(leftBox);
+    auto *rightBox = new QVBoxLayout; auto *rightW = new QWidget; rightW->setLayout(rightBox);
+
+    auto *cbChildTable  = new QComboBox;
+    auto *cbParentTable = new QComboBox;
     const QStringList tables = dm.tables();
-    cbChildTable.addItems(tables);
-    cbParentTable.addItems(tables);
-
+    cbChildTable->addItems(tables);
+    cbParentTable->addItems(tables);
     if (!tableHint.isEmpty()) {
-        int ix = cbChildTable.findText(tableHint);
-        if (ix >= 0) cbChildTable.setCurrentIndex(ix);
+        int ix = cbChildTable->findText(tableHint); if (ix>=0) cbChildTable->setCurrentIndex(ix);
     }
 
+    leftBox->addWidget(new QLabel("Tabla o consulta"));
+    leftBox->addWidget(cbChildTable);
+    rightBox->addWidget(new QLabel("Tabla o consulta"));
+    rightBox->addWidget(cbParentTable);
+    topHL->addWidget(leftW, 1);
+    topHL->addSpacing(12);
+    topHL->addWidget(rightW, 1);
 
-    auto refillCols = [&](QComboBox& tableCb, QComboBox& colCb){
-        colCb.clear();
-        const Schema s = dm.schema(tableCb.currentText());
-        for (int i=0;i<s.size();++i) colCb.addItem(s[i].name, i); // guarda índice
-    };
-    refillCols(cbChildTable, cbChildCol);
-    refillCols(cbParentTable, cbParentCol);
-    QObject::connect(&cbChildTable, &QComboBox::currentTextChanged, [&](const QString&){ refillCols(cbChildTable, cbChildCol); });
-    QObject::connect(&cbParentTable, &QComboBox::currentTextChanged, [&](const QString&){ refillCols(cbParentTable, cbParentCol); });
+    // --- centro: grid de pares de campos + botones ---
+    auto *mid = new QWidget; auto *midVL = new QVBoxLayout(mid); midVL->setContentsMargins(0,0,0,0);
 
-    cbOnDelete.addItems({"Restrict","Cascade","SetNull"});
-    cbOnUpdate.addItems({"Restrict","Cascade","SetNull"});
+    auto *grid = new QTableWidget(0, 2);
+    grid->setAlternatingRowColors(true);
+    grid->verticalHeader()->setVisible(false);
+    grid->horizontalHeader()->setStretchLastSection(true);
+    grid->setSelectionMode(QAbstractItemView::SingleSelection);
+    grid->setSelectionBehavior(QAbstractItemView::SelectRows);
+    grid->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    grid->setShowGrid(true);
+    grid->setHorizontalHeaderItem(0, new QTableWidgetItem(" "));
+    grid->setHorizontalHeaderItem(1, new QTableWidgetItem(" "));
 
-    form->addRow("Tabla hija:",    &cbChildTable);
-    form->addRow("Columna hija:",  &cbChildCol);
-    form->addRow("Tabla padre:",   &cbParentTable);
-    form->addRow("Columna padre:", &cbParentCol);
-    form->addRow("On Delete:",     &cbOnDelete);
-    form->addRow("On Update:",     &cbOnUpdate);
+    auto *rowBtns = new QHBoxLayout;
+    auto *btnAddRow    = new QPushButton("Agregar campo");
+    auto *btnRemoveRow = new QPushButton("Quitar fila");
+    auto *btnJoinType  = new QPushButton("Tipo de combinación...");
+    btnJoinType->setEnabled(false); // informativo (no aplica para FKs)
+    auto *btnJunction  = new QPushButton("Crear tabla de unión…");
+    btnJunction->setEnabled(false);
+    rowBtns->addWidget(btnAddRow);
+    rowBtns->addWidget(btnRemoveRow);
+    rowBtns->addStretch();
+    rowBtns->addWidget(btnJoinType);
+    rowBtns->addWidget(btnJunction);
 
-    QDialogButtonBox bb(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-    QObject::connect(&bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(&bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    form->addRow(&bb);
+    // --- abajo: integridad + cascadas + tipo relación ---
+    auto *chkIntegrity = new QCheckBox("Exigir integridad referencial");
+    auto *chkUpdate    = new QCheckBox("Actualizar en cascada los campos relacionados");
+    auto *chkDelete    = new QCheckBox("Eliminar en cascada los registros relacionados");
+    chkUpdate->setEnabled(false);
+    chkDelete->setEnabled(false);
+    QObject::connect(chkIntegrity, &QCheckBox::toggled, [&](bool on){
+        chkUpdate->setEnabled(on);
+        chkDelete->setEnabled(on);
+    });
 
-    if (dlg.exec() != QDialog::Accepted) return false;
+    auto *lblType = new QLabel("Tipo de relación: Indeterminado");
+    lblType->setStyleSheet("color:#444; font-weight:bold;");
 
-    // ===== Validaciones tipo Access =====
-    const QString childT = cbChildTable.currentText();
-    const QString parentT= cbParentTable.currentText();
-    const int childIdx   = cbChildCol.currentData().toInt();
-    const int parentIdx  = cbParentCol.currentData().toInt();
-    const Schema childS  = dm.schema(childT);
-    const Schema parentS = dm.schema(parentT);
-    const FieldDef& childF = childS[childIdx];
-    const FieldDef& parentF= parentS[parentIdx];
+    // === Selector manual de tipo ===
+    auto *forceTypeLbl = new QLabel("Forzar tipo:");
+    auto *cbForceType  = new QComboBox;
+    cbForceType->addItems(QStringList() << "Auto" << "1:N" << "1:1" << "N:M");
+    cbForceType->setToolTip("Elige un tipo explícito o deja 'Auto' para deducir automáticamente");
+    auto *forceRow = new QHBoxLayout;
+    forceRow->addWidget(forceTypeLbl);
+    forceRow->addWidget(cbForceType);
+    forceRow->addStretch();
 
-    auto sameTableSameCol = (childT == parentT && childIdx == parentIdx);
-    if (sameTableSameCol) {
-        QMessageBox::warning(parent, "Relación", "No puedes relacionar una columna consigo misma.");
-        return false;
-    }
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    bb->button(QDialogButtonBox::Ok)->setText("Aceptar");
+    auto *btnOk = bb->button(QDialogButtonBox::Ok);
+    btnOk->setEnabled(false);
 
-    // 1) Columna padre debe ser PK o índice único (estilo Access)
-    bool parentIsUnique = parentF.pk || parentF.indexado.contains("sin duplicados", Qt::CaseInsensitive);
-    if (!parentIsUnique) {
-        QMessageBox::warning(parent, "Relación",
-                             "La columna padre debe ser clave primaria o tener un índice único (sin duplicados).");
-        return false;
-    }
+    // ==== ensamblar ====
+    root->addWidget(top);
+    midVL->addWidget(grid, 1);
+    midVL->addLayout(rowBtns);
+    root->addWidget(mid, 1);
+    root->addWidget(chkIntegrity);
+    root->addWidget(chkUpdate);
+    root->addWidget(chkDelete);
+    root->addSpacing(4);
+    root->addLayout(forceRow);   // << nuevo
+    root->addWidget(lblType);
+    root->addWidget(bb);
 
-    // 2) Compatibilidad de tipos (heurística sencilla)
-    auto norm = [](QString t){
+    // ===== helpers =====
+    auto normType = [](QString t){
         t = t.toLower().trimmed();
-        if (t.contains("auto")) t = "number";           // autonumeración → número
+        if (t.contains("auto")) return QString("number");
         if (t.contains("entero") || t.contains("number")) return QString("number");
-        if (t.contains("fecha")   || t.contains("hora")) return QString("datetime");
-        if (t.contains("texto")   || t.contains("char")) return QString("text");
-        if (t.contains("bool"))                         return QString("bool");
+        if (t.contains("fecha")  || t.contains("hora"))   return QString("datetime");
+        if (t.contains("texto")  || t.contains("char"))   return QString("text");
+        if (t.contains("bool"))  return QString("bool");
         return t;
     };
-    const QString tChild  = norm(childF.type);
-    const QString tParent = norm(parentF.type);
-    bool typeOk = (tChild == tParent) ||
-                  (tChild == "number"  && tParent == "number") ||
-                  (tChild == "text"    && tParent == "text");
-    if (!typeOk) {
-        QMessageBox::warning(parent, "Relación",
-                             QString("Tipos incompatibles: hija (%1) vs padre (%2).").arg(childF.type, parentF.type));
-        return false;
-    }
 
-    // 3) FK hija no debe ser PK si quieres permitir NULL en SetNull
-    if (cbOnDelete.currentText() == "SetNull" && childF.pk) {
-        QMessageBox::warning(parent, "Relación",
-                             "No puede usarse SET NULL si la columna hija es clave primaria.");
-        return false;
-    }
+    auto setHeadersToTables = [&]{
+        grid->horizontalHeaderItem(0)->setText(cbChildTable->currentText());
+        grid->horizontalHeaderItem(1)->setText(cbParentTable->currentText());
+    };
 
-    // 4) No duplicar relación exacta
-    for (const auto& fk : dm.relationshipsFor(childT)) {
-        if (fk.childTable==childT && fk.childCol==childIdx &&
-            fk.parentTable==parentT && fk.parentCol==parentIdx) {
-            QMessageBox::warning(parent, "Relación", "Esa relación ya existe.");
-            return false;
+    auto makeFieldCombo = [&](const Schema& s)->QComboBox*{
+        auto *cb = new QComboBox;
+        for (const auto& f : s) {
+            QString label = f.pk ? QString::fromUtf8("🔑 ") + f.name : f.name;
+            cb->addItem(label, f.name);
         }
-    }
+        return cb;
+    };
 
-    // Crear FK
-    QString err;
-    auto del = static_cast<FkAction>(cbOnDelete.currentIndex());  // Restrict, Cascade, SetNull
-    auto upd = static_cast<FkAction>(cbOnUpdate.currentIndex());
-    if (!dm.addRelationship(childT, childF.name, parentT, parentF.name, del, upd, &err)) {
-        QMessageBox::warning(parent, "Relación", err);
-        return false;
-    }
-    QMessageBox::information(parent, "Relación", "Relación creada correctamente.");
+    std::function<void()> recomputeState; // forward-declare
+
+    auto currentPairs = [&]{
+        QVector<QPair<QString,QString>> v;
+        for (int r=0; r<grid->rowCount(); ++r) {
+            auto *cbC = qobject_cast<QComboBox*>(grid->cellWidget(r,0));
+            auto *cbP = qobject_cast<QComboBox*>(grid->cellWidget(r,1));
+            if (!cbC || !cbP) continue;
+            const QString cf = cbC->currentData().toString();
+            const QString pf = cbP->currentData().toString();
+            if (!cf.isEmpty() && !pf.isEmpty()) v.push_back({cf,pf});
+        }
+        return v;
+    };
+
+    // ¿El conjunto de campos de 'tableName' es único? (PK o índice "sin duplicados")
+    auto fieldsAreUnique = [&](const QString& tableName, const QVector<QString>& fields)->bool {
+        const Schema s = dm.schema(tableName);
+        if (fields.isEmpty()) return false;
+
+        // ¿todas PK? -> PK compuesta
+        bool allPk = true;
+        for (const auto& fn : fields) {
+            bool isPk = false;
+            for (const auto& f : s) if (f.name==fn) { isPk = f.pk; break; }
+            if (!isPk) { allPk = false; break; }
+        }
+        if (allPk) return true;
+
+        // Fallback: todas con índice "sin duplicados"
+        for (const auto& fn : fields) {
+            bool ok = false;
+            for (const auto& f : s) if (f.name==fn) {
+                    ok = f.indexado.contains("sin duplicados", Qt::CaseInsensitive);
+                    break;
+                }
+            if (!ok) return false;
+        }
+        return true;
+    };
+
+    // Devuelve "1:N", "1:1" o "N:M" según reglas actuales
+    auto deduceRelType = [&](const QString& childTable, const QVector<QString>& childFields,
+                             const QString& parentTable, const QVector<QString>& parentFields)->QString {
+        const bool parentUnique = fieldsAreUnique(parentTable, parentFields);
+        const bool childUnique  = fieldsAreUnique(childTable, childFields);
+        if (parentUnique && !childUnique) return "1:N";
+        if (parentUnique &&  childUnique) return "1:1";
+        return "N:M";
+    };
+
+    auto typesCompatible = [&](const QString& cField, const QString& pField)->bool{
+        const Schema sc = dm.schema(cbChildTable->currentText());
+        const Schema sp = dm.schema(cbParentTable->currentText());
+        auto findF = [](const Schema& s, const QString& n)->FieldDef{
+            for (const auto& f : s) if (f.name==n) return f; return FieldDef{};
+        };
+        const auto cf = findF(sc, cField);
+        const auto pf = findF(sp, pField);
+        return normType(cf.type) == normType(pf.type);
+    };
+
+    // --- addRow (añade par de combos de campos) ---
+    auto addRow = [&]{
+        const Schema childS  = dm.schema(cbChildTable->currentText());
+        const Schema parentS = dm.schema(cbParentTable->currentText());
+        if (childS.isEmpty() || parentS.isEmpty()) return;
+        int r = grid->rowCount();
+        grid->insertRow(r);
+        auto *cbChild  = makeFieldCombo(childS);
+        auto *cbParent = makeFieldCombo(parentS);
+        grid->setCellWidget(r, 0, cbChild);
+        grid->setCellWidget(r, 1, cbParent);
+        grid->selectRow(r);
+        QObject::connect(cbChild,  qOverload<int>(&QComboBox::currentIndexChanged), &dlg, [&](int){ recomputeState(); });
+        QObject::connect(cbParent, qOverload<int>(&QComboBox::currentIndexChanged), &dlg, [&](int){ recomputeState(); });
+    };
+
+    // --- recomputeState (respeta selector "Forzar tipo") ---
+    recomputeState = [&]{
+        setHeadersToTables();
+        const auto pairs = currentPairs();
+        if (pairs.isEmpty()) {
+            lblType->setText("Tipo de relación: Indeterminado");
+            btnOk->setEnabled(false);
+            btnJunction->setEnabled(false);
+            return;
+        }
+        // Validación de tipos por fila
+        for (const auto& pr : pairs) {
+            if (!typesCompatible(pr.first, pr.second)) {
+                lblType->setText("Tipo de relación: tipos incompatibles");
+                btnOk->setEnabled(false);
+                btnJunction->setEnabled(false);
+                return;
+            }
+        }
+        QVector<QString> childFields, parentFields;
+        for (const auto& pr : pairs) { childFields << pr.first; parentFields << pr.second; }
+        const QString autoType =
+            deduceRelType(cbChildTable->currentText(), childFields,
+                          cbParentTable->currentText(), parentFields);
+
+        const QString forced = cbForceType->currentText(); // "Auto","1:N","1:1","N:M"
+
+        auto applyUiFor = [&](const QString& t, const QString& hint){
+            if (t == "1:N") {
+                lblType->setText(hint.isEmpty() ? "Tipo de relación: Uno a varios (1:N)"
+                                                : hint + " — Uno a varios (1:N)");
+                btnOk->setEnabled(true);
+                btnJunction->setEnabled(false);
+            } else if (t == "1:1") {
+                lblType->setText(hint.isEmpty() ? "Tipo de relación: Uno a uno (1:1)"
+                                                : hint + " — Uno a uno (1:1)");
+                btnOk->setEnabled(true);
+                btnJunction->setEnabled(false);
+            } else if (t == "N:M") {
+                lblType->setText(hint.isEmpty() ? "Tipo de relación: Varios a varios (N:M) — requiere tabla de unión"
+                                                : hint + " — N:M (requiere tabla de unión)");
+                btnOk->setEnabled(false);
+                btnJunction->setEnabled(true);
+            } else {
+                lblType->setText("Tipo de relación: Indeterminado");
+                btnOk->setEnabled(false);
+                btnJunction->setEnabled(false);
+            }
+        };
+
+        if (forced == "Auto") {
+            applyUiFor(autoType, "");
+        } else if (forced == "1:N") {
+            applyUiFor("1:N", "(forzado)");
+        } else if (forced == "1:1") {
+            applyUiFor("1:1", "(forzado)");
+        } else if (forced == "N:M") {
+            applyUiFor("N:M", "(forzado)");
+        }
+    };
+
+    auto clearGrid = [&]{
+        grid->setRowCount(0);
+        recomputeState();
+    };
+
+    // poblar una fila inicial
+    addRow();
+    recomputeState();
+
+    // eventos
+    QObject::connect(cbChildTable,  &QComboBox::currentTextChanged, [&](const QString&){
+        clearGrid(); addRow(); recomputeState();
+    });
+    QObject::connect(cbParentTable, &QComboBox::currentTextChanged, [&](const QString&){
+        clearGrid(); addRow(); recomputeState();
+    });
+    QObject::connect(btnAddRow, &QPushButton::clicked, [&]{ addRow(); recomputeState(); });
+    QObject::connect(btnRemoveRow, &QPushButton::clicked, [&]{
+        int r = grid->currentRow();
+        if (r>=0) grid->removeRow(r);
+        recomputeState();
+    });
+    QObject::connect(grid, &QTableWidget::itemSelectionChanged, [&]{ recomputeState(); });
+    QObject::connect(cbForceType, qOverload<int>(&QComboBox::currentIndexChanged), &dlg, [&](int){ recomputeState(); });
+
+    QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    // === Crear tabla de unión para N:M ===
+    QObject::connect(btnJunction, &QPushButton::clicked, [&]{
+        const auto pairs = currentPairs();
+        if (pairs.isEmpty()) return;
+
+        const QString A = cbChildTable->currentText();   // tabla A (hija)
+        const QString B = cbParentTable->currentText();  // tabla B (padre)
+
+        const QString jname = QInputDialog::getText(&dlg, "Tabla de unión",
+                                                    "Nombre de la nueva tabla de unión:",
+                                                    QLineEdit::Normal,
+                                                    A + "_" + B + "_JN");
+        if (jname.trimmed().isEmpty()) return;
+
+        // Construir schema de la tabla de unión: dos FKs por par elegido
+        Schema js;
+        auto addFkField = [&](const QString& baseTable, const QString& baseField){
+            const Schema bs = dm.schema(baseTable);
+            FieldDef f;
+            f.name = baseTable + "_" + baseField;  // FK en tabla de unión
+            // clonar tipo si existe
+            for (const auto& bf : bs) if (bf.name==baseField) {
+                    f.type = bf.type; f.autoSubtipo = bf.autoSubtipo; f.formato = bf.formato; break;
+                }
+            if (f.type.isEmpty()) f.type = "Number";
+            f.pk = false;                 // PK compuesta sería a nivel índice (si tu DataModel lo soporta)
+            f.requerido = true;
+            f.indexado  = "Sí (con duplicados)";
+            js.append(f);
+        };
+        for (const auto& pr : pairs) { addFkField(A, pr.first); addFkField(B, pr.second); }
+
+        QString err;
+        if (!dm.createTable(jname, js, &err)) { QMessageBox::warning(&dlg, "Unión", err); return; }
+        // Crear FKs JN→A y JN→B
+        for (const auto& pr : pairs) {
+            const QString fkA = A + "_" + pr.first;
+            const QString fkB = B + "_" + pr.second;
+            if (!dm.addRelationship(jname, fkA, A, pr.first, FkAction::Restrict, FkAction::Restrict, &err)) {
+                QMessageBox::warning(&dlg, "Unión", "FK a A: " + err); return;
+            }
+            if (!dm.addRelationship(jname, fkB, B, pr.second, FkAction::Restrict, FkAction::Restrict, &err)) {
+                QMessageBox::warning(&dlg, "Unión", "FK a B: " + err); return;
+            }
+        }
+        QMessageBox::information(&dlg, "Unión", "Tabla de unión creada con sus claves foráneas.");
+    });
+
+    // === Aceptar (respeta 'Forzar tipo') ===
+    QObject::connect(bb, &QDialogButtonBox::accepted, [&]{
+        const auto pairs = currentPairs();
+        if (pairs.isEmpty()) { QMessageBox::warning(&dlg, "Relación", "Agrega al menos un par de campos."); return; }
+
+        const QString childT  = cbChildTable->currentText();
+        const QString parentT = cbParentTable->currentText();
+
+        // Compatibilidad + duplicados
+        for (const auto& pr : pairs) {
+            if (!typesCompatible(pr.first, pr.second)) {
+                QMessageBox::warning(&dlg, "Relación", "Tipos incompatibles entre campos seleccionados."); return;
+            }
+            for (const auto& fk : dm.relationshipsFor(childT)) {
+                const auto& sc = dm.schema(childT);
+                const auto& sp = dm.schema(parentT);
+                if (fk.childTable==childT && fk.parentTable==parentT &&
+                    fk.childCol>=0 && fk.childCol<sc.size() &&
+                    fk.parentCol>=0 && fk.parentCol<sp.size() &&
+                    sc[fk.childCol].name == pr.first &&
+                    sp[fk.parentCol].name == pr.second) {
+                    QMessageBox::warning(&dlg, "Relación",
+                                         QString("La relación %1 → %2 ya existe.").arg(pr.first, pr.second));
+                    return;
+                }
+            }
+        }
+
+        QVector<QString> cf, pf; for (auto& pr : pairs) { cf<<pr.first; pf<<pr.second; }
+        const QString autoKind =
+            deduceRelType(childT, cf, parentT, pf);
+        const QString forced = cbForceType->currentText(); // "Auto","1:N","1:1","N:M"
+
+        QString eff = (forced == "Auto") ? autoKind : forced;
+
+        if (eff == "N:M") {
+            QMessageBox::warning(&dlg, "Relación",
+                                 "Has elegido N:M. Usa el botón 'Crear tabla de unión…'.");
+            return;
+        }
+
+        if (eff == "1:1" && !fieldsAreUnique(childT, cf)) {
+            QMessageBox::information(&dlg, "Relación 1:1",
+                                     "Advertencia: para 1:1 ideal, el(los) campo(s) en la tabla hija deberían ser únicos.\n"
+                                     "Se creará la FK igualmente, pero no será 1:1 real sin un índice único.");
+            // Aquí podrías crear un índice único si tu DataModel lo soporta.
+        }
+
+        // Acciones (Access: cascadas solo si hay integridad)
+        FkAction onDel = FkAction::Restrict;
+        FkAction onUpd = FkAction::Restrict;
+        if (chkIntegrity->isChecked()) {
+            if (chkDelete->isChecked()) onDel = FkAction::Cascade;
+            if (chkUpdate->isChecked()) onUpd = FkAction::Cascade;
+        }
+
+        // Crear todas las FKs seleccionadas
+        for (const auto& pr : pairs) {
+            QString err;
+            if (!dm.addRelationship(childT, pr.first, parentT, pr.second, onDel, onUpd, &err)) {
+                QMessageBox::warning(&dlg, "Relación", err);
+                return;
+            }
+        }
+        dlg.accept();
+    });
+
+    // ejecutar
+    if (dlg.exec() != QDialog::Accepted) return false;
+
+    QMessageBox::information(parent, "Relaciones", "Relación(es) creada(s) correctamente.");
     return true;
 }
+
 
 
 // --- Panel izquierdo tipo Access (no usado directamente, helper por si se necesita) ---
@@ -554,14 +854,30 @@ private:
     qreal   rowH_    = 22.0;
 };
 
+
+
 class RelationEdge : public QGraphicsPathItem {
 public:
-    RelationEdge(TableNode* c, int cf, TableNode* p, int pf, const QString& tooltip)
-        : QGraphicsPathItem(nullptr), c_(c), cf_(cf), p_(p), pf_(pf)
+    RelationEdge(TableNode* c, int cf,
+                 TableNode* p, int pf,
+                 const QString& tooltip,
+                 const QString& /*relType*/,
+                 FkAction /*onDelete*/, FkAction /*onUpdate*/)
+        : QGraphicsPathItem(nullptr)
+        , c_(c), cf_(cf), p_(p), pf_(pf)
     {
-        setZValue(-1);
-        setPen(QPen(QColor(120,120,120), 2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        // Siempre sobre los nodos para que no se esconda
+        setZValue(1);
+        setAcceptHoverEvents(true);
+        setFlag(ItemIsSelectable, true);
+
+        basePen_  = QPen(Qt::black, 1.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
+        hoverPen_ = QPen(Qt::black, 1.5, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
+        selPen_   = QPen(Qt::black, 1.5, Qt::DashLine, Qt::SquareCap, Qt::MiterJoin);
+
+        setPen(basePen_);
         setToolTip(tooltip);
+
         refresh();
 
         if (c_) QObject::connect(c_, &TableNode::moved, [this]{ refresh(); });
@@ -571,64 +887,113 @@ public:
     void refresh() {
         if (!c_ || !p_) return;
 
-        // Puntos “puerto” (centro del puntito en la fila)
         a_ = c_->portScenePos(cf_);
         b_ = p_->portScenePos(pf_);
 
-        // Alejar un poco de los bordes para que la línea no “entre” al rectángulo
+        // Separaciones
+        const qreal insetFromPorts = 8.0;  // separa el trazo de los puertos
+        const qreal arrowGap       = 8.0;  // distancia entre punta de flecha y borde de tabla (no tocar)
+        const qreal arrowLen       = 10.0; // largo de flecha
+
         QVector2D v(b_ - a_);
         if (v.length() < 1.0) return;
         QVector2D u = v.normalized();
-        const qreal inset = 10.0;
-        a1_ = a_ + u.toPointF()*inset;
-        b1_ = b_ - u.toPointF()*inset;
 
-        // Trayectoria ortogonal: a -> (midX, a.y) -> (midX, b.y) -> b
-        const qreal midX = 0.5*(a1_.x() + b1_.x());
+        // Puntos internos del cable
+        a1_ = a_ + u.toPointF()*insetFromPorts;
+        b1_ = b_ - u.toPointF()*insetFromPorts;  // todavía “toca” el borde lógico; luego recortamos
 
-        QPainterPath path(a1_);
-        path.lineTo(QPointF(midX, a1_.y()));
-        path.lineTo(QPointF(midX, b1_.y()));
-        path.lineTo(b1_);
+        // Ruta ortogonal ┐└
+        const qreal midX = (a1_.x() + b1_.x()) * 0.5;
+
+        // Construimos la polilínea para conocer el último segmento
+        QVector<QPointF> pts;
+        pts << a1_
+            << QPointF(midX, a1_.y())
+            << QPointF(midX, b1_.y())
+            << b1_;
+
+        // Dirección del último segmento (hacia el padre)
+        QVector2D lastDir(pts.last() - pts[pts.size()-2]);
+        if (lastDir.length() < 0.1) lastDir = QVector2D(1,0);
+        lastDir.normalize();
+
+        // Definimos punta y base de flecha con GAP (no toca la tabla)
+        arrowTip_  = pts.last() - lastDir.toPointF()*arrowGap;
+        arrowBase_ = arrowTip_  - lastDir.toPointF()*arrowLen;
+
+        // Reemplazamos el último punto del camino por la base (línea termina antes)
+        pts.last() = arrowBase_;
+
+        // Construimos path recto por segmentos
+        QPainterPath path(pts.first());
+        for (int i=1;i<pts.size();++i) path.lineTo(pts[i]);
         setPath(path);
+
+        // Hitbox generosa
+        QPainterPathStroker stroker; stroker.setWidth(10);
+        hitShape_ = stroker.createStroke(path);
+        hitShape_.addPath(path);
     }
+
+    QPainterPath shape() const override { return hitShape_; }
 
 protected:
-    void paint(QPainter* p, const QStyleOptionGraphicsItem* o, QWidget* w) override {
-        QGraphicsPathItem::paint(p, o, w);
-        const int n = path().elementCount();
-        if (n < 3) return; // necesitamos al menos move + 2 puntos
-
-        auto drawStubAt = [&](const QPointF& from, const QPointF& to, const QPointF& at) {
-            QVector2D seg(to - from);
-            if (seg.length() < 0.1) return;
-            QVector2D nrm(-seg.y(), seg.x());
-            nrm.normalize();
-            const qreal halfStub = 6.0;
-            QPointF d = nrm.toPointF()*halfStub;
-            p->setPen(pen());
-            p->drawLine(at - d, at + d);
-        };
-
-        QPointF firstBend(path().elementAt(1).x, path().elementAt(1).y);
-        drawStubAt(a1_, firstBend, a1_);
-
-        QPointF prevOfEnd(path().elementAt(n-2).x, path().elementAt(n-2).y);
-        drawStubAt(prevOfEnd, b1_, b1_);
+    void hoverEnterEvent(QGraphicsSceneHoverEvent*) override { setPen(hoverPen_); }
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent*) override { setPen(isSelected() ? selPen_ : basePen_); }
+    void mousePressEvent(QGraphicsSceneMouseEvent* e) override {
+        QGraphicsPathItem::mousePressEvent(e); setPen(selPen_);
+    }
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent* e) override {
+        QGraphicsPathItem::mouseReleaseEvent(e); setPen(hoverPen_);
     }
 
+    void paint(QPainter* p, const QStyleOptionGraphicsItem* o, QWidget* w) override {
+        QGraphicsPathItem::paint(p, o, w);
+        drawArrow(p);  // flecha separada de la tabla
+    }
+
+private:
+    void drawArrow(QPainter* p) const {
+        // Triángulo sólido en (arrowTip_), orientado según el último segmento
+        const QPainterPath& pa = path();
+        if (pa.elementCount() < 2) return;
+
+        QPointF prev(pa.elementAt(pa.elementCount()-1).x,
+                     pa.elementAt(pa.elementCount()-1).y); // este es arrowBase_
+        QVector2D dir(arrowTip_ - prev);
+        if (dir.length() < 0.1) return;
+        dir.normalize();
+
+        QVector2D n(-dir.y(), dir.x());
+        const qreal L = (arrowTip_ - prev).manhattanLength(); // largo actual (≈ arrowLen)
+        const qreal W = 6.0;
+
+        QPointF a = arrowTip_ - dir.toPointF()*L + n.toPointF()*W;
+        QPointF b = arrowTip_;
+        QPointF c = arrowTip_ - dir.toPointF()*L - n.toPointF()*W;
+
+        QPen old = p->pen();
+        p->setBrush(old.color());
+        p->setPen(Qt::NoPen);
+        p->drawPolygon(QPolygonF() << a << b << c);
+        p->setPen(old);
+    }
 
 private:
     QPointer<TableNode> c_;
-    int cf_ = -1;
+    int cf_;
     QPointer<TableNode> p_;
-    int pf_ = -1;
+    int pf_;
 
-    QPointF a_, b_;   // puertos exactos
-    QPointF a1_, b1_; // puntos ya con “inset”
+    QPointF a_, b_;     // puertos exactos
+    QPointF a1_, b1_;   // puntos internos (sin tocar los rects)
+    QPointF arrowBase_; // donde termina la línea
+    QPointF arrowTip_;  // punta (separada del rect por arrowGap)
+
+    QPen basePen_, hoverPen_, selPen_;
+    QPainterPath hitShape_;
 };
-
-
 
 
 class RelationsPage : public QWidget {
@@ -686,7 +1051,17 @@ public:
             emit requestAddRelation();  // lo maneja ShellWindow
         });
 
+
     }
+public slots:
+    void refreshSidebarFromModel();
+
+
+    // asegura que el nodo de la tabla esté en el canvas (si no, lo agrega)
+    void ensureNodeVisible(const QString& table) {
+        if (!nodes_.contains(table)) addTableNode(table);
+    }
+
 
     // Deja el canvas en blanco (como Access al abrir Relaciones)
     void startBlank() {
@@ -715,16 +1090,12 @@ public:
 
         const Schema sc = DataModel::instance().schema(childTable);
         const Schema sp = DataModel::instance().schema(parentTable);
-
-        if (childCol < 0 || parentCol < 0 || childCol >= sc.size() || parentCol >= sp.size())
-            return;
+        if (childCol < 0 || parentCol < 0 || childCol >= sc.size() || parentCol >= sp.size()) return;
 
         auto actionToText = [](FkAction a){
-            switch(a){
-            case FkAction::Restrict: return "Restrict";
+            switch(a){ case FkAction::Restrict: return "Restrict";
             case FkAction::Cascade:  return "Cascade";
-            case FkAction::SetNull:  return "SetNull";
-            }
+            case FkAction::SetNull:  return "SetNull"; }
             return "Restrict";
         };
 
@@ -734,12 +1105,29 @@ public:
                                      actionToText(onDelete),
                                      actionToText(onUpdate));
 
-        auto* e = new RelationEdge(cnode, childCol, pnode, parentCol, tip);
+        // === calcular cardinalidad para dibujar 1/∞ ===
+        auto isUnique = [&](const QString& table, int col)->bool {
+            const Schema s = DataModel::instance().schema(table);
+            if (col < 0 || col >= s.size()) return false;
+            const auto& f = s[col];
+            if (f.pk) return true;
+            return f.indexado.contains("sin duplicados", Qt::CaseInsensitive);
+        };
+        const bool parentUnique = isUnique(parentTable, parentCol);
+        const bool childUnique  = isUnique(childTable, childCol);
+        QString relType = "N:M";
+        if (parentUnique && !childUnique) relType = "1:N";
+        else if (parentUnique && childUnique) relType = "1:1";
+
+        // === usar la nueva arista “bonita” ===
+        auto* e = new RelationEdge(cnode, childCol, pnode, parentCol, tip, relType, onDelete, onUpdate);
         scene_->addItem(e);
         edges_.push_back(e);
     }
+
     // Redibuja solo las aristas (se espera que los nodos ya estén en canvas)
     void rebuildFromModel() { redrawAll(true); }
+
 
 
 signals:
@@ -776,10 +1164,10 @@ private:
         n->setPos(40 + (count % 3) * 300, 40 + (count / 3) * 220);
         nodes_.insert(table, n);
 
-        // ❌ Ya no llamamos a redrawAll() para evitar relaciones automáticas.
-        // ✅ Solo ajustamos el área visible del canvas.
+
         scene_->setSceneRect(scene_->itemsBoundingRect().marginsAdded(QMarginsF(60,60,60,60)));
     }
+
 
 
     void redrawAll(bool clearEdgesOnly=false) {
@@ -833,9 +1221,25 @@ private:
                                              actionToText(fk.onDelete),
                                              actionToText(fk.onUpdate));
 
-                auto* e = new RelationEdge(cnode, cf, pnode, pf, tip);
-                scene_->addItem(static_cast<QGraphicsItem*>(e));
+                // ... dentro de redrawAll, donde hoy haces: auto* e = new RelationEdge(...tip);
+                auto isUnique = [&](const QString& table, int col)->bool {
+                    const Schema s = DataModel::instance().schema(table);
+                    if (col < 0 || col >= s.size()) return false;
+                    const auto& f = s[col];
+                    if (f.pk) return true;
+                    return f.indexado.contains("sin duplicados", Qt::CaseInsensitive);
+                };
+
+                const bool parentUnique = isUnique(fk.parentTable, pf);
+                const bool childUnique  = isUnique(fk.childTable, cf);
+                QString relType = "N:M";
+                if (parentUnique && !childUnique) relType = "1:N";
+                else if (parentUnique && childUnique) relType = "1:1";
+
+                auto* e = new RelationEdge(cnode, cf, pnode, pf, tip, relType, fk.onDelete, fk.onUpdate);
+                scene_->addItem(e);
                 edges_.push_back(e);
+
             }
         }
         scene_->setSceneRect(scene_->itemsBoundingRect().marginsAdded(QMarginsF(60,60,60,60)));
@@ -843,6 +1247,11 @@ private:
 };
 
 
+void RelationsPage::refreshSidebarFromModel() {
+    refreshSidebar();  // reutiliza tu método privado
+    // opcional: ajustar el rect si ya hay nodos en el canvas
+    scene_->setSceneRect(scene_->itemsBoundingRect().marginsAdded(QMarginsF(60,60,60,60)));
+}
 
 ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("MiniAccess — Shell");
@@ -995,34 +1404,49 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         layout->addWidget(lbl);
         layout->addStretch();
         return page;
-
-
-
-
     };
+
 
     stack->addWidget(tablesPage);   // index 0 (Design)
     stack->addWidget(recordsPage);  // index 1 (Datasheet)
     auto *queriesPage   = makePage("Consultas (mock)");
     auto *relationsPage = new RelationsPage;
     stack->addWidget(relationsPage);
-
     connect(relationsPage, &RelationsPage::requestAddRelation, this,
             [this, relationsPage](const QString& tableHint){
-                if (showAddRelationDialog(this, tableHint)) {
-                    // Obtener la última relación añadida y dibujarla
-                    auto& dm = DataModel::instance();
-                    const auto& allTables = dm.tables();
-                    for (const auto& t : allTables) {
-                        const auto& fks = dm.relationshipsFor(t);
-                        if (!fks.isEmpty()) {
-                            const auto& fk = fks.last();  // la última creada
-                            relationsPage->addRelationEdge(
-                                fk.childTable, fk.childCol,
-                                fk.parentTable, fk.parentCol,
-                                fk.onDelete, fk.onUpdate
-                                );
+                auto& dm = DataModel::instance();
+
+                struct FK { QString ct; int cc; QString pt; int pc; FkAction del; FkAction upd; };
+                auto snapshot = [&](){
+                    QList<FK> out;
+                    for (const auto& t : dm.tables()) {
+                        for (const auto& fk : dm.relationshipsFor(t)) {
+                            out.push_back({fk.childTable, fk.childCol, fk.parentTable, fk.parentCol, fk.onDelete, fk.onUpdate});
                         }
+                    }
+                    return out;
+                };
+
+                const auto before = snapshot();
+
+                if (!showAddRelationDialog(this, tableHint))
+                    return;
+
+                const auto after = snapshot();
+                auto same = [](const FK& a, const FK& b){
+                    return a.ct==b.ct && a.cc==b.cc && a.pt==b.pt && a.pc==b.pc;
+                };
+
+                // Dibuja solo las nuevas
+                for (const auto& nf : after) {
+                    bool existed = false;
+                    for (const auto& bf : before) if (same(nf, bf)) { existed = true; break; }
+                    if (!existed) {
+                        // asegúrate de que existan los nodos
+                        relationsPage->ensureNodeVisible(nf.ct);
+                        relationsPage->ensureNodeVisible(nf.pt);
+                        // dibuja la arista
+                        relationsPage->addRelationEdge(nf.ct, nf.cc, nf.pt, nf.pc, nf.del, nf.upd);
                     }
                 }
             });
@@ -1030,8 +1454,6 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
 
     // relaciones
     stack->addWidget(queriesPage);  // index 2
-
-
 
 
 
@@ -1327,7 +1749,6 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
             });
         } else if (t == "Relationships") {
             connect(b, &QToolButton::clicked, this, [this]{
-                // Buscar específicamente el stack de contenido
                 auto *content = this->findChild<QStackedWidget*>("contentStack");
                 if (!content) return;
 
@@ -1339,10 +1760,11 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
                 }
                 if (!relPage) return;
 
+                relPage->refreshSidebarFromModel(); // ← aquí
                 relPage->startBlank();
                 content->setCurrentWidget(relPage);
             });
-        } else if (t == "Avail List") {
+        }else if (t == "Avail List") {
             connect(b, &QToolButton::clicked, this, [this]{
                 QMessageBox::information(this, "Database Tools",
                                          "Placeholder: Lista de disponibilidad (mock).");
