@@ -1503,13 +1503,14 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
                 }
             });
 
-    // También reaccionar a clicks directos en la lista
+    // Click en una tabla: solo seleccionar/sincronizar, SIN navegar a Datasheet
     connect(list, &QListWidget::itemClicked, this, [=](QListWidgetItem* it){
         if (!it) return;
         const QString t = it->text();
         recordsPage->setTableFromFieldDefs(t, tablesPage->schemaFor(t));
-        stack->setCurrentWidget(recordsPage);
+        // NO stack->setCurrentWidget(recordsPage);
     });
+
 
     // ====== Ribbon: Views (Datasheet / Design) ======
     QToolButton *btnDatasheet = nullptr, *btnDesign = nullptr;
@@ -1528,6 +1529,20 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     if (btnDesign) connect(btnDesign, &QToolButton::clicked, this, [=]{
             stack->setCurrentWidget(tablesPage);
         });
+
+    // Deshabilitar el botón de la vista actual y habilitar el otro
+    auto updateViewsUi = [=]{
+        const bool inDatasheet = (stack->currentWidget() == recordsPage);
+        const bool inDesign    = (stack->currentWidget() == tablesPage);
+        if (btnDatasheet) btnDatasheet->setEnabled(!inDatasheet);
+        if (btnDesign)    btnDesign->setEnabled(!inDesign);
+    };
+    // Inicializa el estado actual
+    updateViewsUi();
+    // Mantenerlo sincronizado al cambiar de página
+    QObject::connect(stack, &QStackedWidget::currentChanged, this, [=](int){
+        updateViewsUi();
+    });
 
     // ====== Ribbon: Records / Find (wire actions) ======
     if (auto *homeRibbon = ribbonStack->widget(0)) {
@@ -1696,9 +1711,24 @@ QWidget* ShellWindow::buildCreateRibbon() {
                     return;
                 }
 
-                // Mantenerse en Design view (opcionalmente fuerza el stack a Design)
-                auto stacks = this->findChildren<QStackedWidget*>();
-                if (!stacks.isEmpty()) stacks.first()->setCurrentIndex(0);
+/* === Forzar volver a Home (selección visual y ribbon) === */
+
+// 1) Marca el botón Home y desmarca Create (según lo que tengas disponible)
+#ifdef HAS_HOMEBTN_MEMBER
+                homeBtn->setChecked(true);                 // si tienes puntero miembro
+                createBtn->setChecked(false);
+#else
+                // Fallback: búscalos por texto
+                for (auto *tb : this->findChildren<QToolButton*>()) {
+                    if (tb->text() == "Home")   tb->setChecked(true);
+                    if (tb->text() == "Create") tb->setChecked(false);
+                }
+#endif
+
+                // 2) Muestra el ribbon de Home (página 0)
+                auto ribbons = this->findChildren<QStackedWidget*>();
+                if (!ribbons.isEmpty()) ribbons.first()->setCurrentIndex(0);
+
             });
 
 
