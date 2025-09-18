@@ -147,22 +147,19 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
         if (isInt) {
             bool okD = false;
             const double d = v.toDouble(&okD);
-            if (!okD) { if (err) *err = tr("El campo \"%1\" debe ser entero.").arg(col.name); return false; }
-            // Rechaza fracciones: 12.5 no vale para entero
-            if (std::fabs(d - std::llround(d)) > 1e-9) {
-                if (err) *err = tr("El campo \"%1\" debe ser entero.").arg(col.name);
-                return false;
-            }
-            v = static_cast<qint64>(std::llround(d));
+            if (!okD) { if (err) *err = tr("El campo \"%1\" debe ser entero/numérico.").arg(col.name); return false; }
+            // ✅ En vez de rechazar fracciones, conserva el dato convirtiendo a entero
+            v = static_cast<qint64>(std::llround(d));   // usa std::floor(d) si prefieres truncar
             return true;
         } else {
             bool ok = false;
             const double d = v.toDouble(&ok);
             if (!ok) { if (err) *err = tr("El campo \"%1\" debe ser numérico.").arg(col.name); return false; }
-            v = d;                    // guarda como double
+            v = d;
             return true;
         }
     }
+
 
     if (t == "moneda") {
         bool ok = false; double d = v.toDouble(&ok);
@@ -172,20 +169,40 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
     }
 
     if (t == "fecha_hora") {
+        // Ya contemplas QDate directo:
         if (v.canConvert<QDate>()) {
             QDate d = v.toDate();
             if (!d.isValid()) { if (err) *err = tr("Fecha inválida en \"%1\".").arg(col.name); return false; }
-            v = d;
-            return true;
+            v = d; return true;
         }
+
         const QString s = v.toString().trimmed();
-        static const char* fmts[] = {"yyyy-MM-dd","dd/MM/yyyy","dd-MM-yyyy","MM/dd/yyyy"};
         QDate d;
-        for (auto f : fmts) { d = QDate::fromString(s, f); if (d.isValid()) break; }
-        if (!d.isValid()) { if (err) *err = tr("Fecha inválida en \"%1\". Use yyyy-MM-dd.").arg(col.name); return false; }
+
+        // 1) Nuestros 3 formatos del diseñador
+        d = QDate::fromString(s, "dd-MM-yy");
+        if (!d.isValid()) d = QDate::fromString(s, "dd/MM/yy");
+
+        // 2) Mes en texto español
+        if (!d.isValid()) {
+            QLocale es(QLocale::Spanish, QLocale::Honduras);
+            d = es.toDate(s, "dd/MMMM/yyyy"); // ej: 05/enero/2025
+        }
+
+        // 3) Back-compat de los que ya aceptabas (yyyy-MM-dd, etc.)
+        if (!d.isValid()) d = QDate::fromString(s, "yyyy-MM-dd");
+        if (!d.isValid()) d = QDate::fromString(s, "dd/MM/yyyy");
+        if (!d.isValid()) d = QDate::fromString(s, "dd-MM-yyyy");
+        if (!d.isValid()) d = QDate::fromString(s, "MM/dd/yyyy");
+
+        if (!d.isValid()) {
+            if (err) *err = tr("Fecha inválida en \"%1\". Use DD/MM/YY, DD-MM-YY o DD/MESTEXTO/YYYY.").arg(col.name);
+            return false;
+        }
         v = d;
         return true;
     }
+
 
     if (t == "booleano") {
         // Acepta true/false, 1/0, sí/no, si/no, yes/no
@@ -327,6 +344,52 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
     QHash<QString,int> oldIndex;
     for (int i = 0; i < oldS.size(); ++i) oldIndex.insert(oldS[i].name, i);
 
+    // --- NUEVO: mapa robusto de columnas nuevas -> viejas (con soporte a rename)
+    QVector<int> mapNewToOld(s.size(), -1);
+    QVector<bool> oldUsed(oldS.size(), false);
+
+    // 1) Primero, emparejar por nombre (lo ya existente)
+    for (int i = 0; i < s.size(); ++i) {
+        int oi = oldIndex.value(s[i].name, -1);
+        if (oi >= 0) { mapNewToOld[i] = oi; oldUsed[oi] = true; }
+    }
+
+    // 2) Detectar columnas "nuevas" (renombradas realmente) y "viejas" sin usar
+    QVector<int> newMissing, oldMissing;
+    for (int i = 0; i < s.size(); ++i) if (mapNewToOld[i] < 0) newMissing.append(i);
+    for (int oi = 0; oi < oldS.size(); ++oi) if (!oldUsed[oi]) oldMissing.append(oi);
+
+    // 3) Si la cuenta coincide, asumimos RENAME(s). Emparejar por tipo/PK, con fallback por orden
+    if (!newMissing.isEmpty() && newMissing.size() == oldMissing.size()) {
+        auto typeKey = [](const FieldDef& fd) {
+            return QString("%1|%2").arg(
+                QString(fd.type).trimmed().toLower(),
+                fd.pk ? "pk" : "nopk"
+                );
+        };
+
+        QSet<int> taken;
+        for (int ni : newMissing) {
+            int chosen = -1;
+
+            // a) intento por tipo/PK
+            for (int oi : oldMissing) {
+                if (taken.contains(oi)) continue;
+                if (typeKey(s[ni]) == typeKey(oldS[oi])) { chosen = oi; break; }
+            }
+            // b) fallback: el primero libre (por posición relativa)
+            if (chosen == -1) {
+                for (int oi : oldMissing) { if (!taken.contains(oi)) { chosen = oi; break; } }
+            }
+
+            if (chosen != -1) {
+                mapNewToOld[ni] = chosen;
+                taken.insert(chosen);
+            }
+        }
+    }
+
+    // 4) Construir filas nuevas usando el mapeo final (conserva datos en renames)
     QVector<Record> newRows;
     newRows.reserve(oldRs.size());
 
@@ -334,7 +397,7 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
         Record nr(s.size());
         for (int i = 0; i < s.size(); ++i) {
             const FieldDef& col = s[i];
-            const int oi = oldIndex.value(col.name, -1);
+            const int oi = mapNewToOld[i];
             QVariant v = (oi >= 0 && oi < r.size()) ? r[oi] : QVariant();
 
             QString convErr;
@@ -345,6 +408,7 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
         }
         newRows.append(nr);
     }
+
 
     m_schemas[name] = s;
     m_data[name]    = newRows;
@@ -667,7 +731,6 @@ bool DataModel::saveToJson(const QString& path, QString* err) const {
             jc["autoNewValues"]      = c.autoNewValues;
             jc["mascaraEntrada"]     = c.mascaraEntrada;
             jc["titulo"]             = c.titulo;
-            jc["valorPredeterminado"]= c.valorPredeterminado;
             jc["reglaValidacion"]    = c.reglaValidacion;
             jc["textoValidacion"]    = c.textoValidacion;
             jc["requerido"]          = c.requerido;
@@ -761,7 +824,6 @@ bool DataModel::loadFromJson(const QString& path, QString* err) {
             c.autoNewValues       = jc.value("autoNewValues").toString();
             c.mascaraEntrada      = jc.value("mascaraEntrada").toString();
             c.titulo              = jc.value("titulo").toString();
-            c.valorPredeterminado = jc.value("valorPredeterminado").toString();
             c.reglaValidacion     = jc.value("reglaValidacion").toString();
             c.textoValidacion     = jc.value("textoValidacion").toString();
             c.requerido           = jc.value("requerido").toBool();
