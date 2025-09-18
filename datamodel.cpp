@@ -18,6 +18,7 @@
 #include <QJsonObject>
 #include <cmath>
 #include <QJsonArray>
+#include <QLocale>
 
 /* ====================== Singleton ====================== */
 
@@ -455,8 +456,6 @@ bool DataModel::insertRow(const QString& name, Record r, QString* err) {
     if (!validate(s, r, err)) return false;
     if (!checkFksOnWrite(name, r, err)) return false;  // ⟵ NUEVO
 
-
-
     if (pk >= 0) {
         if (!ensureUniquePk(name, pk, r[pk], -1, err)) return false;
     }
@@ -486,10 +485,64 @@ bool DataModel::updateRow(const QString& name, int row, const Record& newR, QStr
     if (!validate(s, r, err)) return false;
     if (!checkFksOnWrite(name, r, err)) return false;  // ⟵ NUEVO
 
-
     if (pk >= 0) {
         if (!ensureUniquePk(name, pk, r[pk], row, err)) return false;
     }
+
+    // === ADDED: Soporte ON UPDATE para FKs entrantes (cuando 'name' actúa como PADRE) ===
+    {
+        const auto incoming = incomingRelationshipsTo(name); // FKs donde 'name' es tabla padre
+        if (!incoming.isEmpty()) {
+            // Detectar cambios en columnas padre referenciadas por alguna FK
+            QVector<QPair<int, QPair<QVariant,QVariant>>> parentChanges; // (parentCol, (old,new))
+            for (const auto& fk : incoming) {
+                const int pc = fk.parentCol;
+                if (pc < 0) continue;
+                if (pc >= vec[row].size()) continue;
+                const QVariant oldV = vec[row][pc];
+                const QVariant newV = (pc < r.size() ? r[pc] : QVariant());
+                if (oldV != newV) parentChanges.push_back({pc, {oldV, newV}});
+            }
+
+            // Aplicar política onUpdate por cada FK que toque alguna de las columnas cambiadas
+            for (const auto& fk : incoming) {
+                bool touches = false; QVariant oldVal, newVal;
+                for (const auto& ch : parentChanges) {
+                    if (ch.first == fk.parentCol) { touches = true; oldVal = ch.second.first; newVal = ch.second.second; break; }
+                }
+                if (!touches) continue;
+
+                auto& childVec = m_data[fk.childTable];
+                QList<int> hitRows;
+                for (int i = 0; i < childVec.size(); ++i) {
+                    const Record& cr = childVec[i];
+                    if (fk.childCol >= 0 && fk.childCol < cr.size()) {
+                        if (cr[fk.childCol] == oldVal) hitRows.push_back(i);
+                    }
+                }
+                if (hitRows.isEmpty()) continue;
+
+                if (fk.onUpdate == FkAction::Restrict) {
+                    if (err) *err = tr("Restrict: no se puede actualizar %1.%2 porque hay registros referenciando ese valor en %3.")
+                                   .arg(name, m_schemas.value(name)[fk.parentCol].name, fk.childTable);
+                    return false;
+                } else if (fk.onUpdate == FkAction::SetNull) {
+                    for (int i : hitRows) {
+                        if (fk.childCol >= 0 && fk.childCol < childVec[i].size())
+                            childVec[i][fk.childCol] = QVariant();
+                    }
+                    emit rowsChanged(fk.childTable);
+                } else if (fk.onUpdate == FkAction::Cascade) {
+                    for (int i : hitRows) {
+                        if (fk.childCol >= 0 && fk.childCol < childVec[i].size())
+                            childVec[i][fk.childCol] = newVal;
+                    }
+                    emit rowsChanged(fk.childTable);
+                }
+            }
+        }
+    }
+    // === END ADDED ===
 
     vec[row] = r;
     emit rowsChanged(name);
@@ -531,6 +584,83 @@ bool DataModel::addRelationship(const QString& childTable, const QString& childC
     const int cc = columnIndex(cs, childColName);
     const int pc = columnIndex(ps, parentColName);
     if (cc < 0 || pc < 0) { if (err) *err = tr("Columna inexistente en relación."); return false; }
+
+    // === ADDED: Validaciones fuertes de creación de FK ===
+
+    // 1) Compatibilidad de tipos entre hijo y padre
+    auto normCompat = [](const FieldDef& f){
+        const QString s = f.type.trimmed().toLower();
+        if (s.startsWith(u"auto"))                                    return QString("autonum_long");
+        if (s.startsWith(u"número") || s.startsWith(u"numero"))       return QString("numero");
+        if (s.startsWith(u"fecha"))                                   return QString("fecha_hora");
+        if (s.startsWith(u"moneda"))                                  return QString("moneda");
+        if (s.startsWith(u"sí/no") || s.startsWith(u"si/no"))          return QString("booleano");
+        if (s.startsWith(u"texto largo"))                             return QString("texto_largo");
+        return QString("texto");
+    };
+
+    const FieldDef& cfd = cs[cc];
+    const FieldDef& pfd = ps[pc];
+    const QString ct = normCompat(cfd);
+    const QString pt = normCompat(pfd);
+
+    auto compatible = [&](){
+        if (ct == pt) return true;
+        // Permitir Autonumeración(Long) <-> Número
+        if (ct=="autonum_long" && (pt=="numero"||pt=="autonum_long")) return true;
+        if (pt=="autonum_long" && (ct=="numero"||ct=="autonum_long")) return true;
+        return false;
+    }();
+
+    if (!compatible) {
+        if (err) *err = tr("Tipos incompatibles: %1.%2 (%3) → %4.%5 (%6)")
+                       .arg(childTable, cfd.name, cfd.type, parentTable, pfd.name, pfd.type);
+        return false;
+    }
+
+    // 2) Evitar duplicado exacto de relación (misma child.col -> parent.col)
+    for (const auto& existing : m_fksByChild.value(childTable)) {
+        if (existing.childCol==cc && existing.parentTable==parentTable && existing.parentCol==pc) {
+            if (err) *err = tr("La relación ya existe.");
+            return false;
+        }
+    }
+
+    // 3) Integridad previa: no permitir crear la FK si ya hay valores huérfanos
+    {
+        const auto& childRows = m_data.value(childTable);
+        const auto& parentRows = m_data.value(parentTable);
+
+        // Normaliza QVariant a clave string comparable
+        auto keyOf = [](const QVariant& v)->QString {
+            if (!v.isValid() || v.isNull()) return QStringLiteral("<NULL>");
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+            if (v.canConvert<QDate>()) return v.toDate().toString(Qt::ISODate);
+#else
+            if (v.type() == QVariant::Date) return v.toDate().toString(Qt::ISODate);
+#endif
+            return v.toString();
+        };
+
+        // Conjunto de valores válidos del padre en la columna referenciada (como string)
+        QSet<QString> parentKeys;
+        for (const auto& pr : parentRows) {
+            if (pc >= 0 && pc < pr.size()) parentKeys.insert(keyOf(pr[pc]));
+        }
+
+        for (const auto& r : childRows) {
+            if (cc < 0 || cc >= r.size()) continue;
+            const QVariant v = r[cc];
+            // Nulos permitidos si la columna no es "requerido"
+            if (!v.isValid() || v.isNull()) continue;
+            if (!parentKeys.contains(keyOf(v))) {
+                if (err) *err = tr("No se puede crear la relación: hay filas en %1.%2 sin padre en %3.%4.")
+                               .arg(childTable, cfd.name, parentTable, pfd.name);
+                return false;
+            }
+        }
+    }
+    // === END ADDED ===
 
     // Nota: no exigimos que el padre sea PK, pero es lo normal.
     ForeignKey fk;
@@ -867,4 +997,3 @@ bool DataModel::loadFromJson(const QString& path, QString* err) {
 
     return true;
 }
-
