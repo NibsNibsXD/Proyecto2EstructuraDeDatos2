@@ -25,7 +25,7 @@ DataModel& DataModel::instance() {
 
 DataModel::DataModel(QObject* parent) : QObject(parent) {}
 
-/* ====================== Helpers ====================== */
+/* ====================== Helpers (libres) ====================== */
 
 static inline bool isEmptyVar(const QVariant& v) {
     if (!v.isValid() || v.isNull()) return true;
@@ -40,15 +40,21 @@ static inline bool isEmptyVar(const QVariant& v) {
 }
 
 // Mapea el texto de FieldDef.type a una etiqueta estable
-static inline QString normType(const QString& t) {
+static inline QString normType_free(const QString& t) {
     const QString s = t.trimmed().toLower();
     if (s.startsWith(u"auto"))                                    return "autonumeracion";
     if (s.startsWith(u"número") || s.startsWith(u"numero"))       return "numero";
     if (s.startsWith(u"fecha"))                                   return "fecha_hora";
     if (s.startsWith(u"moneda"))                                  return "moneda";
-    if (s.startsWith(u"sí/no") || s.startsWith(u"si/no"))          return "booleano";
-    if (s.startsWith(u"texto largo"))                              return "texto_largo";
+    if (s.startsWith(u"sí/no") || s.startsWith(u"si/no"))         return "booleano";
+    if (s.startsWith(u"texto largo"))                             return "texto_largo";
     return "texto"; // por defecto (Texto corto)
+}
+
+/* ====================== Métodos privados (cabecera) ====================== */
+
+QString DataModel::normType(const QString& t) const {
+    return normType_free(t);
 }
 
 bool DataModel::isValidTableName(const QString& n) const {
@@ -60,6 +66,106 @@ int DataModel::pkColumn(const Schema& s) const {
     for (int i = 0; i < s.size(); ++i)
         if (s[i].pk) return i;
     return -1;
+}
+
+int DataModel::fieldIndex(const Schema& s, const QString& name) const {
+    for (int i = 0; i < s.size(); ++i)
+        if (QString::compare(s[i].name, name, Qt::CaseInsensitive) == 0) return i;
+    return -1;
+}
+
+int DataModel::fieldIndex(const QString& table, const QString& name) const {
+    return fieldIndex(m_schemas.value(table), name);
+}
+
+bool DataModel::isUniqueField(const FieldDef& f) const {
+    if (f.pk) return true;
+    return f.indexado.contains("sin duplicados", Qt::CaseInsensitive);
+}
+
+bool DataModel::sameValue(const QVariant& a, const QVariant& b) const {
+    if (!a.isValid() && !b.isValid()) return true;
+    if (a.isNull() && b.isNull()) return true;
+    if (a.typeName() == b.typeName()) return a == b;
+
+// Comparación tolerante:
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+    if (a.canConvert<double>() && b.canConvert<double>()) {
+#else
+    if (a.canConvert(QMetaType::Double) && b.canConvert(QMetaType::Double)) {
+#endif
+        return std::fabs(a.toDouble() - b.toDouble()) < 1e-9;
+    }
+    return a.toString() == b.toString();
+}
+
+bool DataModel::validateRecordCore(const Schema& s, const Record& r, QString* err) const {
+    if (r.size() < s.size()) {
+        if (err) *err = tr("Registro con longitud inválida.");
+        return false;
+    }
+    // Requeridos y tamaños se validan en normalizeValue (que usa validate)
+    return true;
+}
+
+bool DataModel::checkUniqueness(const QString& table, const Schema& s,
+                                const Record& candidate, int skipRow, QString* err) const
+{
+    const auto& vec = m_data.value(table);
+    // 1) PK
+    const int pk = pkColumn(s);
+    if (pk >= 0 && pk < candidate.size()) {
+        const QVariant& pkVal = candidate[pk];
+        if (pkVal.isValid() && !pkVal.isNull()) {
+            for (int i = 0; i < vec.size(); ++i) {
+                if (i == skipRow) continue;
+                const Record& rec = vec[i];
+                if (rec.isEmpty()) continue;
+                if (pk < rec.size() && sameValue(rec[pk], pkVal)) {
+                    if (err) *err = tr("Clave primaria duplicada: %1").arg(pkVal.toString());
+                    return false;
+                }
+            }
+        }
+    }
+    // 2) Únicos ("Sí (sin duplicados)")
+    for (int c = 0; c < s.size(); ++c) {
+        const FieldDef& f = s[c];
+        if (!isUniqueField(f)) continue;
+        const QVariant& val = candidate.value(c);
+        if (!val.isValid() || val.isNull()) continue; // NULLs permiten duplicados típicamente
+        for (int i = 0; i < vec.size(); ++i) {
+            if (i == skipRow) continue;
+            const Record& rec = vec[i];
+            if (rec.isEmpty()) continue;
+            if (c < rec.size() && sameValue(rec[c], val)) {
+                if (f.pk) {
+                    if (err) *err = tr("Clave primaria duplicada: %1").arg(val.toString());
+                } else {
+                    if (err) *err = tr("Valor duplicado en campo único \"%1\": %2").arg(f.name, val.toString());
+                }
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool DataModel::checkForeignKeys(const QString& table, const Schema& s,
+                                 const Record& candidate, QString* err) const
+{
+    Q_UNUSED(s);
+    return checkFksOnWrite(table, candidate, err);
+}
+
+void DataModel::assignAutonumberIfNeeded(const QString& table, const Schema& s, Record& r) const {
+    const int pk = pkColumn(s);
+    if (pk >= 0 && normType(s[pk].type) == "autonumeracion") {
+        r.resize(std::max(r.size(), s.size()));
+        if (isEmptyVar(r[pk])) {
+            r[pk] = nextAutoNumber(table);
+        }
+    }
 }
 
 QVariant DataModel::nextAutoNumber(const QString& name) const {
@@ -108,7 +214,6 @@ QVariant DataModel::nextAutoNumber(const QString& name) const {
     }
     return mx + 1;
 }
-
 
 bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) const {
     if (isEmptyVar(v)) {
@@ -224,10 +329,10 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
     {
         QString s = v.toString();
         if (col.size > 0 && s.size() > col.size) s.truncate(col.size);
+
         v = s;
         return true;
     }
-
 }
 
 bool DataModel::ensureUniquePk(const QString& name, int pkCol, const QVariant& pkVal,
@@ -454,21 +559,17 @@ bool DataModel::insertRow(const QString& name, Record r, QString* err) {
     ensureTableExists(name);
     const Schema s = m_schemas.value(name);
 
-    // Autonumera si aplica y si viene vacío
-    const int pk = pkColumn(s);
-    if (pk >= 0 && normType(s[pk].type) == "autonumeracion") {
-        r.resize(std::max(r.size(), s.size()));
-        if (isEmptyVar(r[pk])) {
-            r[pk] = nextAutoNumber(name);
-        }
-    }
+    // Autonum si aplica y viene vacío
+    assignAutonumberIfNeeded(name, s, r);
 
+    // Normalización + requeridos
     if (!validate(s, r, err)) return false;
-    if (!checkFksOnWrite(name, r, err)) return false;
 
-    if (pk >= 0) {
-        if (!ensureUniquePk(name, pk, r[pk], -1, err)) return false;
-    }
+    // Integridad referencial
+    if (!checkForeignKeys(name, s, r, err)) return false;
+
+    // Unicidad (PK + únicos)
+    if (!checkUniqueness(name, s, r, -1, err)) return false;
 
     // === Avail List: reutiliza huecos antes de hacer append ===
     auto& vec  = m_data[name];
@@ -511,12 +612,14 @@ bool DataModel::updateRow(const QString& name, int row, const Record& newR, QStr
         }
     }
 
+    // Normalización
     if (!validate(s, r, err)) return false;
-    if (!checkFksOnWrite(name, r, err)) return false;
 
-    if (pk >= 0) {
-        if (!ensureUniquePk(name, pk, r[pk], row, err)) return false;
-    }
+    // Integridad referencial (como hija)
+    if (!checkForeignKeys(name, s, r, err)) return false;
+
+    // Unicidad (PK + únicos) respetando skipRow
+    if (!checkUniqueness(name, s, r, row, err)) return false;
 
     // === ON UPDATE para FKs entrantes (cuando 'name' actúa como PADRE) ===
     {
@@ -627,7 +730,7 @@ bool DataModel::addRelationship(const QString& childTable, const QString& childC
         if (s.startsWith(u"número") || s.startsWith(u"numero"))       return QString("numero");
         if (s.startsWith(u"fecha"))                                   return QString("fecha_hora");
         if (s.startsWith(u"moneda"))                                  return QString("moneda");
-        if (s.startsWith(u"sí/no") || s.startsWith(u"si/no"))          return QString("booleano");
+        if (s.startsWith(u"sí/no") || s.startsWith(u"si/no"))         return QString("booleano");
         if (s.startsWith(u"texto largo"))                             return QString("texto_largo");
         return QString("texto");
     };
@@ -686,8 +789,8 @@ bool DataModel::addRelationship(const QString& childTable, const QString& childC
             const QVariant v = r[cc];
             if (!v.isValid() || v.isNull()) continue;
             if (!parentKeys.contains(keyOf(v))) {
-                if (err) *err = tr("No se puede crear la relación: hay filas en %1.%2 sin padre en %2.%3.")
-                               .arg(childTable, cfd.name, pfd.name);
+                if (err) *err = tr("No se puede crear la relación: hay filas en %1.%2 sin padre en %3.%4.")
+                               .arg(childTable, cfd.name, parentTable, pfd.name);
                 return false;
             }
         }
@@ -839,7 +942,7 @@ static inline FkAction fkActionFromStr(QString s) {
 // Convertir un QVariant a JSON según el tipo lógico de la columna
 static QJsonValue cellToJson(const FieldDef& col, const QVariant& v) {
     if (!v.isValid() || v.isNull()) return QJsonValue(); // null
-    const QString t = normType(col.type);
+    const QString t = normType_free(col.type);
     if (t == "fecha_hora") {
         const QDate d = v.canConvert<QDate>() ? v.toDate() : QDate::fromString(v.toString(), "yyyy-MM-dd");
         return d.isValid() ? QJsonValue(d.toString("yyyy-MM-dd")) : QJsonValue();
@@ -859,7 +962,7 @@ static QJsonValue cellToJson(const FieldDef& col, const QVariant& v) {
 // Inversa: JSON -> QVariant usando el esquema
 static QVariant jsonToCell(const FieldDef& col, const QJsonValue& j) {
     if (j.isUndefined() || j.isNull()) return QVariant();
-    const QString t = normType(col.type);
+    const QString t = normType_free(col.type);
     if (t == "fecha_hora")    return QDate::fromString(j.toString(), "yyyy-MM-dd");
     if (t == "booleano")      return j.toBool();
     if (t == "moneda")        return j.toDouble();
