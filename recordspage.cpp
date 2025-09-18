@@ -41,6 +41,8 @@
 #include <QKeySequence>
 #include <QClipboard>
 #include <QGuiApplication>
+#include <QFocusEvent>
+#include <QMouseEvent>
 
 
 
@@ -249,6 +251,27 @@ static inline QString normType(const QString& t) {
     return "texto"; // Texto corto
 }
 
+class DatePopupOpener : public QObject {
+public:
+    using QObject::QObject;
+protected:
+    bool eventFilter(QObject* obj, QEvent* ev) override {
+        auto *de = qobject_cast<QDateEdit*>(obj);
+        if (!de) return QObject::eventFilter(obj, ev);
+
+        if (ev->type() == QEvent::FocusIn || ev->type() == QEvent::MouseButtonPress) {
+            QTimer::singleShot(0, de, [de]{
+                QKeyEvent press(QEvent::KeyPress, Qt::Key_F4, Qt::NoModifier);
+                QCoreApplication::sendEvent(de, &press);
+                QKeyEvent release(QEvent::KeyRelease, Qt::Key_F4, Qt::NoModifier);
+                QCoreApplication::sendEvent(de, &release);
+            });
+        }
+        return QObject::eventFilter(obj, ev);
+    }
+};
+
+
 // --- Delegado: editor encaja en la celda, ajusta altura y aplica reglas por tipo
 class DatasheetDelegate : public QStyledItemDelegate {
 public:
@@ -333,19 +356,32 @@ public:
 
                 if (t == "fecha_hora") {
                     auto *de = new QDateEdit(parent);
-                    de->setFrame(false);
-                    de->setCalendarPopup(true);
-                    de->setLocale(QLocale(QLocale::Spanish, QLocale::Honduras));
 
-                    const QString base = baseFormatKey(fd.formato);   // "dd-MM-yy" | "dd/MM/yy" | "dd/MMMM/yyyy"
+                    // Formato + localización
+                    const QString base = baseFormatKey(fd.formato);  // "dd-MM-yy" | "dd/MM/yy" | "dd/MMMM/yyyy"
                     de->setDisplayFormat(base.isEmpty() ? "dd/MM/yy" : base);
+                    de->setLocale(QLocale(QLocale::Spanish, QLocale::Honduras));
+                    de->setCalendarPopup(true);
+                    de->setFrame(false);
+                    de->setKeyboardTracking(false);
+                    de->setFocusPolicy(Qt::StrongFocus);
 
-                    // Para saber si el usuario realmente eligió algo:
+                    // Visual: no “01/01/00”, usa HOY en filas existentes
+                    de->setSpecialValueText("");
+                    de->setMinimumDate(QDate(100, 1, 1));
+                    de->setDate(QDate::currentDate());
+
+                    // touched solo una vez (el bloque estaba duplicado)
                     de->setProperty("touched", false);
-                    QObject::connect(de, &QDateEdit::dateChanged, de, [de]{ de->setProperty("touched", true); });
+                    QObject::connect(de, &QDateEdit::dateChanged, de, [de]{
+                        de->setProperty("touched", true);
+                    });
 
+                    // Abrir popup al foco/click
+                    de->installEventFilter(new DatePopupOpener(de));
                     return de;
                 }
+
 
             }
         }
@@ -365,19 +401,20 @@ public:
             const QString txt = m_owner->sheet()->item(idx.row(), idx.column())
             ? m_owner->sheet()->item(idx.row(), idx.column())->text()
             : QString();
-            // Intenta parsear EXACTAMENTE con el displayFormat vigente
+
             QDate val = QDate::fromString(txt, de->displayFormat());
             de->blockSignals(true);
             if (val.isValid()) {
-                de->setDate(val);             // respeta 01/01/00 si venía así
+                de->setDate(val);
                 de->setProperty("touched", false);
             } else {
-                // Si estaba vacío, pon hoy SOLO para el editor (NO escribe nada aún)
+                // si estaba vacío/ilegible, usa HOY para no ver 01/01/00
                 de->setDate(QDate::currentDate());
-                de->setProperty("touched", false);
+                de->setProperty("touched", true); // cuenta como dato si el usuario no toca más
             }
             de->blockSignals(false);
             return;
+
         }
 
 
@@ -850,12 +887,22 @@ QWidget* RecordsPage::makeEditorFor(const FieldDef& fd) const
         de->setLocale(QLocale(QLocale::Spanish, QLocale::Honduras));
         de->setSpecialValueText("");
         de->setMinimumDate(QDate(100,1,1));
-        de->setDate(de->minimumDate()); // arranca vacío
+        de->setDate(QDate::currentDate());     // (New) muestra HOY, nada de 01/01/00
+        de->setKeyboardTracking(false);
+        de->setFocusPolicy(Qt::StrongFocus);
 
+        // flags + disparos
+        de->setProperty("touched", false);
+        connect(de, &QDateEdit::dateChanged, de, [de]{ de->setProperty("touched", true); });
+
+        // 1) Prepara la siguiente (New) cuando cambia la fecha
         connect(de, &QDateEdit::dateChanged, this, &RecordsPage::prepareNextNewRow);
-        connect(de, &QDateEdit::editingFinished, this, &RecordsPage::commitNewRow);
+        // 2) Y TAMBIÉN cuando cierra el editor (por si dejó la misma fecha de hoy)
+        connect(de, &QDateEdit::editingFinished, this, &RecordsPage::prepareNextNewRow);
+
         return de;
     }
+
 
 
     // recordspage.cpp (editor para 'moneda' en fila New) — usar QLineEdit
@@ -1052,7 +1099,10 @@ void RecordsPage::clearNewRowEditors()
             if (auto *le = qobject_cast<QLineEdit*>(w)) le->clear();
             else if (auto *cb = qobject_cast<QCheckBox*>(w)) cb->setChecked(false);
             else if (auto *chk = w->findChild<QCheckBox*>()) chk->setChecked(false);
-            else if (auto *de  = qobject_cast<QDateEdit*>(w)) de->setDate(QDate::currentDate());
+            else if (auto *de  = qobject_cast<QDateEdit*>(w)) {
+                de->setDate(de->minimumDate());       // queda visualmente vacío
+                de->setProperty("touched", false);    // aún no eligió
+            }
             else if (auto *ds  = qobject_cast<QDoubleSpinBox*>(w)) ds->setValue(0.0);
         }
     }
@@ -1306,7 +1356,7 @@ bool RecordsPage::editRecordDialog(const QString& title, const Schema& s, Record
             // NACE VACÍO: usar specialValueText para mostrar vacío
             de->setSpecialValueText("");
             de->setMinimumDate(QDate(100,1,1));
-            de->setDate(de->minimumDate());
+            de->setDate(QDate::currentDate());
 
             // Si el registro traía un valor válido, úsalo
             if (r[i].canConvert<QDate>() && r[i].toDate().isValid())
@@ -1486,7 +1536,23 @@ Record RecordsPage::rowToRecord(int row) const
         const QString txt = it ? it->text() : QString();
 
         if (t == "fecha_hora") {
-            rec[c] = QDate::fromString(txt, "yyyy-MM-dd");
+            const FieldDef& fdf = m_schema[c];
+            const QString base = baseFormatKey(fdf.formato);   // "dd-MM-yy" | "dd/MM/yy" | "dd/MMMM/yyyy"
+            QLocale es(QLocale::Spanish, QLocale::Honduras);
+
+            QDate d;
+            if (base == "dd-MM-yy")      d = QDate::fromString(txt, "dd-MM-yy");
+            else if (base == "dd/MM/yy") d = QDate::fromString(txt, "dd/MM/yy");
+            else if (base == "dd/MMMM/yyyy")
+                d = es.toDate(txt, "dd/MMMM/yyyy");
+
+            // Fallbacks por si en alguna parte quedó ISO
+            if (!d.isValid())            d = QDate::fromString(txt, Qt::ISODate);   // "yyyy-MM-dd"
+
+            rec[c] = d.isValid() ? QVariant(d) : QVariant();
+            continue;
+
+
 
         } else if (t == "moneda" || t == "numero") {
             const QString norm = cleanNumericText(txt);
@@ -1657,7 +1723,11 @@ void RecordsPage::prepareNextNewRow()
         if (QWidget *w = ui->twRegistros->cellWidget(last, c)) {
             QString t;
             if (auto *le = qobject_cast<QLineEdit*>(w))        t = le->text().trimmed();
-            else if (auto *de = qobject_cast<QDateEdit*>(w))   t = de->date().isValid() ? "x" : "";
+            else if (auto *de = qobject_cast<QDateEdit*>(w)) {
+                // cuenta como dato SOLO si eligió algo
+                const bool touched = de->property("touched").toBool();
+                t = (touched && de->date() != de->minimumDate()) ? "x" : "";
+            }
             else if (auto *cb = qobject_cast<QCheckBox*>(w))   t = cb->isChecked() ? "1" : "";
             // Evita contar "0", "0.0", "0.00" como "datos"
             if (!t.isEmpty() && t != "0" && t != "0.0" && t != "0.00") { hasData = true; break; }
