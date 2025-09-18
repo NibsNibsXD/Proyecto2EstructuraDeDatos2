@@ -1748,17 +1748,16 @@ QWidget* ShellWindow::buildCreateRibbon() {
 
     return wrap;
 }
-
 QWidget* ShellWindow::buildDBToolsRibbon() {
     auto *wrap = new QWidget;
     auto *hl = new QHBoxLayout(wrap);
     hl->setContentsMargins(8,2,8,2);
     hl->setSpacing(16);
 
-    auto *gIdx = makeRibbonGroup("Indexes", { makeActionBtn("Indexes") });
-    auto *gRel = makeRibbonGroup("Relationships", { makeActionBtn("Relationships") });
-    auto *gAvail = makeRibbonGroup("Avail List", { makeActionBtn("Avail List") });
-    auto *gCompact = makeRibbonGroup("Compact", { makeActionBtn("Compact") });
+    auto *gIdx     = makeRibbonGroup("Indexes",       { makeActionBtn("Indexes") });
+    auto *gRel     = makeRibbonGroup("Relationships", { makeActionBtn("Relationships") });
+    auto *gAvail   = makeRibbonGroup("Avail List",    { makeActionBtn("Avail List") });
+    auto *gCompact = makeRibbonGroup("Compact",       { makeActionBtn("Compact") });
 
     hl->addWidget(gIdx);
     hl->addWidget(vSep());
@@ -1768,15 +1767,18 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
     hl->addWidget(vSep());
     hl->addWidget(gCompact);
     hl->addStretch();
-    // --- Placeholders para los botones del Ribbon "Database Tools"
+
+    // --- Actions para "Database Tools"
     const auto btnsDb = wrap->findChildren<QToolButton*>();
     for (auto *b : btnsDb) {
         const QString t = b->text();
+
         if (t == "Indexes") {
             connect(b, &QToolButton::clicked, this, [this]{
                 QMessageBox::information(this, "Database Tools",
                                          "Placeholder: UI de índices (mock).");
             });
+
         } else if (t == "Relationships") {
             connect(b, &QToolButton::clicked, this, [this]{
                 auto *content = this->findChild<QStackedWidget*>("contentStack");
@@ -1790,15 +1792,44 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
                 }
                 if (!relPage) return;
 
-                relPage->refreshSidebarFromModel(); // ← aquí
+                relPage->refreshSidebarFromModel();
                 relPage->startBlank();
                 content->setCurrentWidget(relPage);
             });
-        }else if (t == "Avail List") {
+
+        } else if (t == "Avail List") {
+            // <<< CAMBIO: abrir Records (Datasheet) con la tabla seleccionada/primera >>>
             connect(b, &QToolButton::clicked, this, [this]{
-                QMessageBox::information(this, "Database Tools",
-                                         "Placeholder: Lista de disponibilidad (mock).");
+                // 1) Localizar el stack principal
+                auto *content = this->findChild<QStackedWidget*>("contentStack");
+                if (!content) return;
+
+                // 2) Encontrar RecordsPage y TablesPage dentro del stack
+                RecordsPage* recPage = nullptr;
+                TablesPage*  tabPage = nullptr;
+                for (int i = 0; i < content->count(); ++i) {
+                    if (!recPage) recPage = qobject_cast<RecordsPage*>(content->widget(i));
+                    if (!tabPage) tabPage = qobject_cast<TablesPage*>(content->widget(i));
+                }
+                if (!recPage || !tabPage) return;
+
+                // 3) Tomar la tabla seleccionada en el panel izquierdo (o la primera disponible)
+                QString tableName;
+                if (auto *list = tabPage->tableListWidget()) {
+                    if (auto *it = list->currentItem()) tableName = it->text();
+                }
+                if (tableName.isEmpty()) {
+                    const auto tables = DataModel::instance().tables();
+                    if (!tables.isEmpty()) tableName = tables.first();
+                }
+
+                // 4) Sincronizar RecordsPage con esa tabla y mostrar la vista Datasheet
+                if (!tableName.isEmpty()) {
+                    recPage->setTableFromFieldDefs(tableName, tabPage->schemaFor(tableName));
+                }
+                content->setCurrentWidget(recPage);
             });
+
         } else if (t == "Compact") {
             connect(b, &QToolButton::clicked, this, [this]{
                 QMessageBox::information(this, "Database Tools",
@@ -1809,5 +1840,6 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
 
     return wrap;
 }
+
 
 #include "shellwindow.moc"

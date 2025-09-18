@@ -26,8 +26,6 @@ signals:
     void navState(int cur, int tot, bool canPrev, bool canNext);
 
 public slots:
-
-
     // Integración con TablesPage/Shell
     void setTableFromFieldDefs(const QString& name, const Schema& defs);
 
@@ -41,6 +39,7 @@ public slots:
     void sortAscending();
     void sortDescending();
     void clearSorting();
+
     const Schema& schema() const;
     QTableWidget* sheet() const;
 
@@ -68,12 +67,13 @@ private slots:
     void onAnterior();
     void onSiguiente();
     void onUltimo();
-    void onCurrentCellChanged(int currentRow, int currentCol, int previousRow, int previousCol);
 
-
+    void onCurrentCellChanged(int currentRow, int currentCol,
+                              int previousRow, int previousCol);
 
 private:
     enum class Mode { Idle, Insert, Edit };
+
     // Anti-reentradas / estado interno
     bool m_isReloading  = false;
     bool m_isCommitting = false;
@@ -88,7 +88,7 @@ private:
     QMetaObject::Connection m_rowsConn;
 
     // ---- Helpers de UI ----
-    void setMode(Mode m);
+    void setMode(RecordsPage::Mode m);  // ← firma explícita para enlazador
     void updateHeaderButtons();
     void updateStatusLabels();
 

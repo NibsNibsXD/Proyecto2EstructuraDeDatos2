@@ -13,11 +13,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
-#include <QFile>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <cmath>
-#include <QJsonArray>
 #include <QLocale>
 
 /* ====================== Singleton ====================== */
@@ -89,21 +85,23 @@ QVariant DataModel::nextAutoNumber(const QString& name) const {
         return static_cast<qint64>(1);
     }
 
-    // Random entero único
+    // Random entero único (omite tombstones)
     if (fd.autoNewValues.toLower().startsWith("random")) {
         while (true) {
             qint64 v = static_cast<qint64>(QRandomGenerator::global()->bounded(1, INT_MAX));
             bool clash = false;
             for (const auto& rec : it.value()) {
+                if (rec.isEmpty()) continue; // ⟵ omitir tombstones
                 if (rec.value(pk).toLongLong() == v) { clash = true; break; }
             }
             if (!clash) return v;
         }
     }
 
-    // Incremental: max + 1
+    // Incremental: max + 1 (omite tombstones)
     qlonglong mx = 0;
     for (const auto& r : it.value()) {
+        if (r.isEmpty()) continue; // ⟵ omitir tombstones
         bool ok = false;
         qlonglong v = r.value(pk).toLongLong(&ok);
         if (ok) mx = std::max(mx, v);
@@ -149,7 +147,6 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
             bool okD = false;
             const double d = v.toDouble(&okD);
             if (!okD) { if (err) *err = tr("El campo \"%1\" debe ser entero/numérico.").arg(col.name); return false; }
-            // ✅ En vez de rechazar fracciones, conserva el dato convirtiendo a entero
             v = static_cast<qint64>(std::llround(d));   // usa std::floor(d) si prefieres truncar
             return true;
         } else {
@@ -160,7 +157,6 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
             return true;
         }
     }
-
 
     if (t == "moneda") {
         bool ok = false; double d = v.toDouble(&ok);
@@ -180,7 +176,7 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
         const QString s = v.toString().trimmed();
         QDate d;
 
-        // 1) Nuestros 3 formatos del diseñador
+        // 1) Formatos del diseñador
         d = QDate::fromString(s, "dd-MM-yy");
         if (!d.isValid()) d = QDate::fromString(s, "dd/MM/yy");
 
@@ -190,7 +186,7 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
             d = es.toDate(s, "dd/MMMM/yyyy"); // ej: 05/enero/2025
         }
 
-        // 3) Back-compat de los que ya aceptabas (yyyy-MM-dd, etc.)
+        // 3) Back-compat
         if (!d.isValid()) d = QDate::fromString(s, "yyyy-MM-dd");
         if (!d.isValid()) d = QDate::fromString(s, "dd/MM/yyyy");
         if (!d.isValid()) d = QDate::fromString(s, "dd-MM-yyyy");
@@ -204,9 +200,7 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
         return true;
     }
 
-
     if (t == "booleano") {
-        // Acepta true/false, 1/0, sí/no, si/no, yes/no
 #if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
         if (v.typeId() == QMetaType::Bool)
 #else
@@ -233,6 +227,7 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
         v = s;
         return true;
     }
+
 }
 
 bool DataModel::ensureUniquePk(const QString& name, int pkCol, const QVariant& pkVal,
@@ -242,7 +237,9 @@ bool DataModel::ensureUniquePk(const QString& name, int pkCol, const QVariant& p
     const auto& vec = m_data.value(name);
     for (int i = 0; i < vec.size(); ++i) {
         if (i == ignoreRow) continue;
-        const QVariant& v = vec[i].value(pkCol);
+        const Record& rec = vec[i];
+        if (rec.isEmpty()) continue; // ⟵ omitir tombstones
+        const QVariant& v = rec.value(pkCol);
         if (v.isValid() && !v.isNull() && v == pkVal) {
             if (err) *err = tr("Clave primaria duplicada: %1").arg(pkVal.toString());
             return false;
@@ -274,12 +271,17 @@ void DataModel::setTableDescription(const QString& table, const QString& desc) {
     // opcional: emit schemaChanged(table, m_schemas.value(table));
 }
 
+void DataModel::ensureTableExists(const QString& table) {
+    if (!m_schemas.contains(table)) m_schemas[table] = Schema{};
+    if (!m_data.contains(table))    m_data[table]    = {};
+    if (!m_freeList.contains(table))m_freeList[table]= {};
+}
+
 bool DataModel::createTable(const QString& name, const Schema& s, QString* err) {
     if (!isValidTableName(name)) { if (err) *err = tr("Nombre de tabla inválido: %1").arg(name); return false; }
     if (m_schemas.contains(name)) { if (err) *err = tr("La tabla ya existe: %1").arg(name); return false; }
 
-    // ✅ Aceptar esquema vacío al crear; el usuario lo diseñará luego.
-    // (si quieres, puedes dejar validación solo cuando s NO esté vacío)
+    // Aceptar esquema vacío al crear; el usuario lo diseñará luego.
     if (!s.isEmpty()) {
         QSet<QString> names; int pkCount = 0;
         for (const auto& c : s) {
@@ -294,18 +296,18 @@ bool DataModel::createTable(const QString& name, const Schema& s, QString* err) 
     m_schemas.insert(name, s);
     m_data.insert(name, {});
     m_tableDescriptions.insert(name, QString());
+    m_freeList.insert(name, {}); // ⟵ preparar avail list
     emit tableCreated(name);
     emit schemaChanged(name, s);
     return true;
 }
-
-
 
 bool DataModel::dropTable(const QString& name, QString* err) {
     if (!m_schemas.contains(name)) { if (err) *err = tr("No existe la tabla: %1").arg(name); return false; }
     m_schemas.remove(name);
     m_data.remove(name);
     m_tableDescriptions.remove(name);
+    m_freeList.remove(name);
     emit tableDropped(name);
     return true;
 }
@@ -318,6 +320,7 @@ bool DataModel::renameTable(const QString& oldName, const QString& newName, QStr
     m_schemas.insert(newName, m_schemas.take(oldName));
     m_data.insert(newName,   m_data.take(oldName));
     m_tableDescriptions.insert(newName, m_tableDescriptions.take(oldName));
+    m_freeList.insert(newName, m_freeList.take(oldName));
     emit tableDropped(oldName);
     emit tableCreated(newName);
     emit schemaChanged(newName, m_schemas.value(newName));
@@ -395,6 +398,7 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
     newRows.reserve(oldRs.size());
 
     for (const auto& r : oldRs) {
+        if (r.isEmpty()) { newRows.append(Record{}); continue; } // conservar tombstones
         Record nr(s.size());
         for (int i = 0; i < s.size(); ++i) {
             const FieldDef& col = s[i];
@@ -410,9 +414,14 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
         newRows.append(nr);
     }
 
-
     m_schemas[name] = s;
     m_data[name]    = newRows;
+
+    // Recalcular free list (tombstones) tras cambio de esquema
+    m_freeList[name].clear();
+    for (int i = 0; i < m_data[name].size(); ++i)
+        if (m_data[name][i].isEmpty()) m_freeList[name].push_back(i);
+
     emit schemaChanged(name, s);
     return true;
 }
@@ -442,6 +451,7 @@ bool DataModel::validate(const Schema& s, Record& r, QString* err) const {
 
 bool DataModel::insertRow(const QString& name, Record r, QString* err) {
     if (!m_schemas.contains(name)) { if (err) *err = tr("No existe la tabla: %1").arg(name); return false; }
+    ensureTableExists(name);
     const Schema s = m_schemas.value(name);
 
     // Autonumera si aplica y si viene vacío
@@ -454,21 +464,40 @@ bool DataModel::insertRow(const QString& name, Record r, QString* err) {
     }
 
     if (!validate(s, r, err)) return false;
-    if (!checkFksOnWrite(name, r, err)) return false;  // ⟵ NUEVO
+    if (!checkFksOnWrite(name, r, err)) return false;
 
     if (pk >= 0) {
         if (!ensureUniquePk(name, pk, r[pk], -1, err)) return false;
     }
 
-    m_data[name].push_back(r);
+    // === Avail List: reutiliza huecos antes de hacer append ===
+    auto& vec  = m_data[name];
+    auto& free = m_freeList[name];
+
+    if (!free.isEmpty()) {
+        int idx = free.back();
+        free.pop_back();
+        if (idx >= 0 && idx < vec.size() && vec[idx].isEmpty()) {
+            vec[idx] = r;               // reutilización in-place
+        } else {
+            vec.push_back(r);           // fallback seguro
+        }
+    } else {
+        vec.push_back(r);
+    }
+
     emit rowsChanged(name);
     return true;
 }
 
 bool DataModel::updateRow(const QString& name, int row, const Record& newR, QString* err) {
     if (!m_schemas.contains(name)) { if (err) *err = tr("No existe la tabla: %1").arg(name); return false; }
+    ensureTableExists(name);
     auto& vec = m_data[name];
-    if (row < 0 || row >= vec.size()) { if (err) *err = tr("Fila fuera de rango."); return false; }
+    if (row < 0 || row >= vec.size() || vec[row].isEmpty()) { // ⟵ evitar actualizar tombstone
+        if (err) *err = tr("La fila no existe.");
+        return false;
+    }
 
     Record r = newR;
     const Schema s = m_schemas.value(name);
@@ -483,17 +512,16 @@ bool DataModel::updateRow(const QString& name, int row, const Record& newR, QStr
     }
 
     if (!validate(s, r, err)) return false;
-    if (!checkFksOnWrite(name, r, err)) return false;  // ⟵ NUEVO
+    if (!checkFksOnWrite(name, r, err)) return false;
 
     if (pk >= 0) {
         if (!ensureUniquePk(name, pk, r[pk], row, err)) return false;
     }
 
-    // === ADDED: Soporte ON UPDATE para FKs entrantes (cuando 'name' actúa como PADRE) ===
+    // === ON UPDATE para FKs entrantes (cuando 'name' actúa como PADRE) ===
     {
-        const auto incoming = incomingRelationshipsTo(name); // FKs donde 'name' es tabla padre
+        const auto incoming = incomingRelationshipsTo(name); // FKs donde 'name' es padre
         if (!incoming.isEmpty()) {
-            // Detectar cambios en columnas padre referenciadas por alguna FK
             QVector<QPair<int, QPair<QVariant,QVariant>>> parentChanges; // (parentCol, (old,new))
             for (const auto& fk : incoming) {
                 const int pc = fk.parentCol;
@@ -504,7 +532,6 @@ bool DataModel::updateRow(const QString& name, int row, const Record& newR, QStr
                 if (oldV != newV) parentChanges.push_back({pc, {oldV, newV}});
             }
 
-            // Aplicar política onUpdate por cada FK que toque alguna de las columnas cambiadas
             for (const auto& fk : incoming) {
                 bool touches = false; QVariant oldVal, newVal;
                 for (const auto& ch : parentChanges) {
@@ -516,6 +543,7 @@ bool DataModel::updateRow(const QString& name, int row, const Record& newR, QStr
                 QList<int> hitRows;
                 for (int i = 0; i < childVec.size(); ++i) {
                     const Record& cr = childVec[i];
+                    if (cr.isEmpty()) continue; // ⟵ omitir tombstones
                     if (fk.childCol >= 0 && fk.childCol < cr.size()) {
                         if (cr[fk.childCol] == oldVal) hitRows.push_back(i);
                     }
@@ -542,7 +570,7 @@ bool DataModel::updateRow(const QString& name, int row, const Record& newR, QStr
             }
         }
     }
-    // === END ADDED ===
+    // === END ON UPDATE ===
 
     vec[row] = r;
     emit rowsChanged(name);
@@ -551,18 +579,25 @@ bool DataModel::updateRow(const QString& name, int row, const Record& newR, QStr
 
 bool DataModel::removeRows(const QString& name, const QList<int>& rowsToRemove, QString* err) {
     if (!m_schemas.contains(name)) return false;
+    ensureTableExists(name);
 
-    // ⟵ NUEVO: chequear/ejecutar acciones FK entrantes
+    // Acciones FK entrantes respecto a 'name' como padre
     if (!handleParentDeletes(name, rowsToRemove, err)) return false;
 
-    auto& vec = m_data[name];
-    QList<int> rr = rowsToRemove;
-    std::sort(rr.begin(), rr.end(), std::greater<int>());
-    for (int r : rr) if (r >= 0 && r < vec.size()) vec.remove(r);
+    auto& vec  = m_data[name];
+    auto& free = m_freeList[name];
+
+    // Marcar tombstones + añadir a free list (no eliminar físicamente)
+    for (int r : rowsToRemove) {
+        if (r < 0 || r >= vec.size()) continue;
+        if (vec[r].isEmpty()) continue;   // ya era hueco
+        vec[r].clear();                   // ⟵ tombstone
+        free.push_back(r);                // ⟵ agrega al Avail List (LIFO)
+    }
+
     emit rowsChanged(name);
     return true;
 }
-
 
 int DataModel::columnIndex(const Schema& s, const QString& name) const {
     for (int i = 0; i < s.size(); ++i)
@@ -585,9 +620,7 @@ bool DataModel::addRelationship(const QString& childTable, const QString& childC
     const int pc = columnIndex(ps, parentColName);
     if (cc < 0 || pc < 0) { if (err) *err = tr("Columna inexistente en relación."); return false; }
 
-    // === ADDED: Validaciones fuertes de creación de FK ===
-
-    // 1) Compatibilidad de tipos entre hijo y padre
+    // Validaciones fuertes de creación de FK
     auto normCompat = [](const FieldDef& f){
         const QString s = f.type.trimmed().toLower();
         if (s.startsWith(u"auto"))                                    return QString("autonum_long");
@@ -618,7 +651,7 @@ bool DataModel::addRelationship(const QString& childTable, const QString& childC
         return false;
     }
 
-    // 2) Evitar duplicado exacto de relación (misma child.col -> parent.col)
+    // Evitar duplicado exacto de relación
     for (const auto& existing : m_fksByChild.value(childTable)) {
         if (existing.childCol==cc && existing.parentTable==parentTable && existing.parentCol==pc) {
             if (err) *err = tr("La relación ya existe.");
@@ -626,12 +659,11 @@ bool DataModel::addRelationship(const QString& childTable, const QString& childC
         }
     }
 
-    // 3) Integridad previa: no permitir crear la FK si ya hay valores huérfanos
+    // Integridad previa: no permitir crear la FK si ya hay valores huérfanos
     {
         const auto& childRows = m_data.value(childTable);
         const auto& parentRows = m_data.value(parentTable);
 
-        // Normaliza QVariant a clave string comparable
         auto keyOf = [](const QVariant& v)->QString {
             if (!v.isValid() || v.isNull()) return QStringLiteral("<NULL>");
 #if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
@@ -642,27 +674,25 @@ bool DataModel::addRelationship(const QString& childTable, const QString& childC
             return v.toString();
         };
 
-        // Conjunto de valores válidos del padre en la columna referenciada (como string)
         QSet<QString> parentKeys;
         for (const auto& pr : parentRows) {
+            if (pr.isEmpty()) continue; // ⟵ omitir tombstones
             if (pc >= 0 && pc < pr.size()) parentKeys.insert(keyOf(pr[pc]));
         }
 
         for (const auto& r : childRows) {
+            if (r.isEmpty()) continue; // ⟵ omitir tombstones
             if (cc < 0 || cc >= r.size()) continue;
             const QVariant v = r[cc];
-            // Nulos permitidos si la columna no es "requerido"
             if (!v.isValid() || v.isNull()) continue;
             if (!parentKeys.contains(keyOf(v))) {
-                if (err) *err = tr("No se puede crear la relación: hay filas en %1.%2 sin padre en %3.%4.")
-                               .arg(childTable, cfd.name, parentTable, pfd.name);
+                if (err) *err = tr("No se puede crear la relación: hay filas en %1.%2 sin padre en %2.%3.")
+                               .arg(childTable, cfd.name, pfd.name);
                 return false;
             }
         }
     }
-    // === END ADDED ===
 
-    // Nota: no exigimos que el padre sea PK, pero es lo normal.
     ForeignKey fk;
     fk.childTable  = childTable;
     fk.childCol    = cc;
@@ -695,7 +725,6 @@ bool DataModel::checkFksOnWrite(const QString& childTable, const Record& r, QStr
     for (const auto& fk : fks) {
         if (fk.childCol < 0 || fk.childCol >= r.size()) continue;
         const QVariant v = r[fk.childCol];
-        // Null permitido si la columna no es "requerido"
         if (!v.isValid() || v.isNull()) continue;
 
         const auto& parentRows = m_data.value(fk.parentTable);
@@ -704,6 +733,7 @@ bool DataModel::checkFksOnWrite(const QString& childTable, const Record& r, QStr
 
         bool found = false;
         for (const auto& pr : parentRows) {
+            if (pr.isEmpty()) continue; // ⟵ omitir tombstones
             if (pr.size() > fk.parentCol && pr[fk.parentCol].isValid() && pr[fk.parentCol] == v) {
                 found = true; break;
             }
@@ -719,6 +749,8 @@ bool DataModel::checkFksOnWrite(const QString& childTable, const Record& r, QStr
 
 // Aplica acciones de borrado referencial para filas padre
 bool DataModel::handleParentDeletes(const QString& parentTable, const QList<int>& parentRows, QString* err) {
+    ensureTableExists(parentTable);
+
     // Obtén valores padre que van a desaparecer
     const auto& parentVec = m_data.value(parentTable);
     const Schema ps = m_schemas.value(parentTable);
@@ -728,6 +760,7 @@ bool DataModel::handleParentDeletes(const QString& parentTable, const QList<int>
     for (int r : parentRows) {
         if (r < 0 || r >= parentVec.size()) continue;
         const Record& rec = parentVec[r];
+        if (rec.isEmpty()) continue; // ya es hueco
         for (const auto& fk : incomingRelationshipsTo(parentTable)) {
             if (fk.parentCol >= 0 && fk.parentCol < rec.size())
                 doomedValues[fk.parentCol].append(rec[fk.parentCol]);
@@ -738,8 +771,8 @@ bool DataModel::handleParentDeletes(const QString& parentTable, const QList<int>
     for (auto it = m_fksByChild.begin(); it != m_fksByChild.end(); ++it) {
         const QString child = it.key();
         auto fks = it.value();
+        ensureTableExists(child);
         auto& cvec = m_data[child];
-        const Schema cs = m_schemas.value(child);
 
         // Para cada FK que apunte a parentTable
         for (const auto& fk : fks) {
@@ -749,6 +782,7 @@ bool DataModel::handleParentDeletes(const QString& parentTable, const QList<int>
             QList<int> hitRows;
             for (int i = 0; i < cvec.size(); ++i) {
                 const Record& cr = cvec[i];
+                if (cr.isEmpty()) continue; // omitir huecos
                 if (fk.childCol >= 0 && fk.childCol < cr.size()) {
                     const QVariant v = cr[fk.childCol];
                     if (doomedValues.value(fk.parentCol).contains(v))
@@ -763,17 +797,20 @@ bool DataModel::handleParentDeletes(const QString& parentTable, const QList<int>
                                .arg(child);
                 return false;
             } else if (fk.onDelete == FkAction::SetNull) {
-                // Setea null en la FK
                 for (int i : hitRows) {
                     if (fk.childCol >= 0 && fk.childCol < cvec[i].size())
                         cvec[i][fk.childCol] = QVariant();
                 }
                 emit rowsChanged(child);
             } else if (fk.onDelete == FkAction::Cascade) {
-                // Borrado en cascada
-                QList<int> toDel = hitRows;
-                std::sort(toDel.begin(), toDel.end(), std::greater<int>());
-                for (int r : toDel) if (r >= 0 && r < cvec.size()) cvec.remove(r);
+                // ⟵ Usar tombstones + avail list del hijo
+                auto& ffree = m_freeList[child];
+                for (int r : hitRows) {
+                    if (r >= 0 && r < cvec.size() && !cvec[r].isEmpty()) {
+                        cvec[r].clear();
+                        ffree.push_back(r);
+                    }
+                }
                 emit rowsChanged(child);
             }
         }
@@ -781,6 +818,7 @@ bool DataModel::handleParentDeletes(const QString& parentTable, const QList<int>
     return true;
 }
 
+/* ====================== Persistencia JSON ====================== */
 
 // --- Helpers para persistencia ---
 static inline QString fkActionToStr(FkAction a) {
@@ -869,18 +907,26 @@ bool DataModel::saveToJson(const QString& path, QString* err) const {
         }
         tobj["schema"] = js;
 
-        // Filas
+        // Filas: guardamos también los tombstones como arrays de nulls
         QJsonArray jrows;
         const auto& vec = m_data.value(table);
         for (const auto& r : vec) {
             QJsonArray jrow;
-            for (int i = 0; i < s.size(); ++i) {
-                const QVariant v = (i < r.size()) ? r[i] : QVariant();
-                jrow.append(cellToJson(s[i], v));
+            if (r.isEmpty()) {
+                // tombstone: todos nulls
+                for (int i = 0; i < s.size(); ++i) jrow.append(QJsonValue());
+            } else {
+                for (int i = 0; i < s.size(); ++i) {
+                    const QVariant v = (i < r.size()) ? r[i] : QVariant();
+                    jrow.append(cellToJson(s[i], v));
+                }
             }
             jrows.append(jrow);
         }
         tobj["rows"] = jrows;
+
+        // Guardar también métricas de free list (opcional, solo informativo)
+        tobj["freeCount"] = m_freeList.value(table).size();
 
         jt.append(tobj);
     }
@@ -933,6 +979,7 @@ bool DataModel::loadFromJson(const QString& path, QString* err) {
     m_data.clear();
     m_tableDescriptions.clear();
     m_fksByChild.clear();
+    m_freeList.clear();
 
     // Tablas
     for (const auto& vtab : root.value("tables").toArray()) {
@@ -964,12 +1011,26 @@ bool DataModel::loadFromJson(const QString& path, QString* err) {
         m_schemas.insert(name, s);
         m_data.insert(name, {});
         m_tableDescriptions.insert(name, tobj.value("description").toString());
+        m_freeList.insert(name, {});
 
         // filas
         const QJsonArray jrows = tobj.value("rows").toArray();
         auto& vec = m_data[name];
-        for (const auto& vrow : jrows) {
-            const QJsonArray ja = vrow.toArray();
+        auto& free = m_freeList[name];
+        for (int ri = 0; ri < jrows.size(); ++ri) {
+            const QJsonArray ja = jrows.at(ri).toArray();
+
+            // Detectar si la fila es "todo nulls" => tombstone
+            bool allNull = true;
+            for (int i = 0; i < s.size(); ++i) {
+                if (!(i < ja.size()) || !ja.at(i).isNull()) { allNull = false; break; }
+            }
+            if (allNull) {
+                vec.push_back(Record{}); // ⟵ tombstone
+                free.push_back(ri);
+                continue;
+            }
+
             Record r(s.size());
             for (int i = 0; i < s.size(); ++i) {
                 const QJsonValue jv = (i < ja.size() ? ja.at(i) : QJsonValue());
@@ -979,7 +1040,6 @@ bool DataModel::loadFromJson(const QString& path, QString* err) {
             validate(s, r, &verr);  // normaliza; si algo no convierte, queda null
             vec.push_back(r);
         }
-
     }
 
     // Relaciones (usa la API pública para respetar validaciones)
@@ -996,4 +1056,38 @@ bool DataModel::loadFromJson(const QString& path, QString* err) {
     }
 
     return true;
+}
+
+/* ====================== Avail List: Compact / Stats ====================== */
+
+int DataModel::compactTable(const QString& table, QString* err) {
+    Q_UNUSED(err);
+    if (!m_schemas.contains(table)) return 0;
+    ensureTableExists(table);
+
+    auto& vec = m_data[table];
+    QVector<Record> compacted;
+    compacted.reserve(vec.size());
+    for (const auto& rec : vec) {
+        if (!rec.isEmpty()) compacted.push_back(rec);
+    }
+    int removed = vec.size() - compacted.size();
+    vec.swap(compacted);
+    m_freeList[table].clear();
+    emit rowsChanged(table);
+    return removed;
+}
+
+DataModel::AvailStats DataModel::availStats(const QString& table) const {
+    AvailStats st;
+    auto it = m_data.constFind(table);
+    if (it == m_data.constEnd()) return st;
+
+    st.total = it->size();
+    for (const auto& rec : *it) {
+        if (rec.isEmpty()) ++st.deleted;
+    }
+    auto itf = m_freeList.constFind(table);
+    st.freeSlots = (itf == m_freeList.constEnd()) ? 0 : itf->size();
+    return st;
 }

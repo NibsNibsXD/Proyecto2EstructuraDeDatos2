@@ -28,41 +28,30 @@
 #include <QSet>
 #include <QDebug>
 #include <QStyledItemDelegate>
-#include <QLocale>
 #include <QToolTip>
 #include <QCursor>
 #include <QRegularExpression>
 #include <QDoubleValidator>
 #include <QRegularExpressionValidator>
-#include <QToolTip>
 #include <QKeyEvent>
 #include <QClipboard>
-#include <QKeyEvent>
 #include <QKeySequence>
-#include <QClipboard>
 #include <QGuiApplication>
 #include <QFocusEvent>
 #include <QMouseEvent>
 #include <QCalendarWidget>
 #include <QCoreApplication>
 
-
-
 static QString cleanNumericText(QString s) {
     s = s.trimmed();
-    // quita símbolos típicos de moneda y espacios duros
     s.remove(QChar::Nbsp);
-    s.remove(QRegularExpression("[\\s\\p{Sc}]")); // quita espacios y símbolos de moneda
-    // deja solo dígitos, punto, coma y signo
+    s.remove(QRegularExpression("[\\s\\p{Sc}]"));
     s = s.remove(QRegularExpression("[^0-9,\\.-]"));
-    // si hay ambos (coma y punto), asume coma = miles → elimínala
     if (s.contains(',') && s.contains('.')) s.remove(',');
-    // si solo hay coma, trátala como decimal
     else if (s.contains(',') && !s.contains('.')) s.replace(',', '.');
     return s;
 }
 
-// Helpers locales (si los usas aquí)
 static int parseDecPlaces(const QString& fmt) {
     QRegularExpression rx("\\bdp=(\\d)\\b");
     auto m = rx.match(fmt);
@@ -93,12 +82,10 @@ protected:
     bool eventFilter(QObject* obj, QEvent* ev) override {
         if (obj != m_le) return QObject::eventFilter(obj, ev);
 
-        // Validaciones por tecla
         if (ev->type() == QEvent::KeyPress) {
             auto *ke = static_cast<QKeyEvent*>(ev);
             const int k = ke->key();
 
-            // Pegado por atajo (⌘V / Ctrl+V / Shift+Insert)
             if (ke->matches(QKeySequence::Paste) ||
                 (ke->modifiers() == Qt::ShiftModifier && ke->key() == Qt::Key_Insert)) {
                 const QString clip = QGuiApplication::clipboard()->text();
@@ -106,14 +93,12 @@ protected:
                     showCellTip(m_owner, m_idx,
                                 m_isInt ? QObject::tr("Solo enteros (sin decimales).")
                                         : QObject::tr("Solo números con hasta %1 decimales.").arg(m_dp));
-                    return true; // bloquear
+                    return true;
                 }
                 insertNormalized(clip);
-                return true; // ya procesamos el pegado
+                return true;
             }
 
-
-            // Deja pasar navegación/edición
             if (ke->modifiers() & (Qt::ControlModifier|Qt::AltModifier|Qt::MetaModifier)) return false;
             if (k==Qt::Key_Backspace || k==Qt::Key_Delete ||
                 k==Qt::Key_Left || k==Qt::Key_Right ||
@@ -123,13 +108,11 @@ protected:
             const QString t = ke->text();
             if (t.isEmpty()) return false;
 
-            // Letras no permitidas
             if (t.contains(QRegularExpression("[A-Za-z]"))) {
                 showCellTip(m_owner, m_idx, QObject::tr("Solo números."));
-                return true; // bloquear
+                return true;
             }
 
-            // Signo menos: solo una vez y al principio
             if (t == "-") {
                 if (m_le->cursorPosition()!=0 || m_le->text().contains('-')) {
                     showCellTip(m_owner, m_idx, QObject::tr("El signo '-' solo al inicio."));
@@ -138,20 +121,16 @@ protected:
                 return false;
             }
 
-            // Punto/coma decimal
             if (t == "." || t == ",") {
                 if (m_isInt) {
                     showCellTip(m_owner, m_idx, QObject::tr("Este campo es entero; no admite decimales."));
                     return true;
                 }
-                // Normaliza a punto
                 insertNormalized(".");
-                return true; // ya insertamos
+                return true;
             }
 
-            // Dígitos
             if (t.contains(QRegularExpression("\\d"))) {
-                // ¿respetará el límite de decimales?
                 if (!m_isInt && m_dp >= 0) {
                     QString next = prospectiveText(t);
                     const int dot = next.indexOf('.');
@@ -164,10 +143,9 @@ protected:
                         }
                     }
                 }
-                return false; // dejar pasar
+                return false;
             }
 
-            // Cualquier otro símbolo: bloquear
             showCellTip(m_owner, m_idx, QObject::tr("Solo números."));
             return true;
         }
@@ -189,18 +167,13 @@ private:
     }
 
     bool accepts(const QString& chunk) const {
-        // construye el resultado potencial y revisa reglas
         QString in = chunk;
         in.replace(',', '.');
         QString next = prospectiveText(in);
 
-        // letras -> no
         if (next.contains(QRegularExpression("[A-Za-z]"))) return false;
-
-        // enteros: no punto
         if (m_isInt && next.contains('.')) return false;
 
-        // decimales: respeta dp
         if (!m_isInt) {
             int dot = next.indexOf('.');
             if (dot >= 0) {
@@ -208,18 +181,15 @@ private:
                 if (after > m_dp) return false;
             }
         }
-        // signo '-' válido solo al inicio y una vez
         int minusCount = next.count('-');
         if (minusCount > 1) return false;
         if (minusCount==1 && !next.startsWith('-')) return false;
 
-        // el validador final aún hará chequeo numérico, esto es UX inmediato
         return true;
     }
 
     void insertNormalized(QString s) {
         s.replace(',', '.');
-        // emular tecleo: reemplaza selección o inserta en cursor
         QString next = prospectiveText(s);
         m_le->setText(next);
         m_le->setCursorPosition(next.size());
@@ -238,10 +208,6 @@ static QString baseFormatKey(const QString& fmt) {
     return (i >= 0) ? fmt.left(i).trimmed() : fmt.trimmed();
 }
 
-
-
-
-// ---- helper de tipo (texto -> etiqueta estable) ----
 static inline QString normType(const QString& t) {
     const QString s = t.trimmed().toLower();
     if (s.startsWith(u"auto")) return "autonumeracion";
@@ -250,7 +216,7 @@ static inline QString normType(const QString& t) {
     if (s.startsWith(u"moneda")) return "moneda";
     if (s.startsWith(u"sí/no") || s.startsWith(u"si/no")) return "booleano";
     if (s.startsWith(u"texto largo")) return "texto_largo";
-    return "texto"; // Texto corto
+    return "texto";
 }
 
 class DatePopupOpener : public QObject {
@@ -273,15 +239,13 @@ protected:
     }
 };
 
-
-// --- Delegado: editor encaja en la celda, ajusta altura y aplica reglas por tipo
 class DatasheetDelegate : public QStyledItemDelegate {
 public:
     explicit DatasheetDelegate(RecordsPage* owner)
         : QStyledItemDelegate(owner), m_owner(owner) {}
 
     QWidget* createEditor(QWidget *parent,
-                          const QStyleOptionViewItem &opt,
+                          const QStyleOptionViewItem &,
                           const QModelIndex &idx) const override
     {
         QLineEdit *le = new QLineEdit(parent);
@@ -291,14 +255,12 @@ public:
 #endif
         le->setStyleSheet("margin:0; padding:2px 4px;");
 
-        // --- Reglas por columna (según Schema)
         if (m_owner && idx.isValid()) {
             const Schema& s = m_owner->schema();
             if (idx.column() >= 0 && idx.column() < s.size()) {
                 const FieldDef& fd = s[idx.column()];
                 const QString t = normType(fd.type);
 
-                // 1) Texto / Texto largo: limitar longitud + tooltip al topar
                 if ((t == "texto" || t == "texto_largo") && fd.size > 0) {
                     le->setMaxLength(fd.size);
                     QObject::connect(le, &QLineEdit::textEdited, le, [this, le, fd, idx]{
@@ -313,35 +275,30 @@ public:
                     });
                 }
 
-                // 2) Número: validador (bloquea letras desde la primera tecla)
                 if (t == "numero") {
                     const QString sz = fd.autoSubtipo.trimmed().toLower();
                     const bool isInt = sz.contains("byte") || sz.contains("entero")
                                        || sz.contains("integer") || sz.contains("long");
                     if (isInt) {
-                        // Entero 64-bit aprox: permite vacío mientras se edita
                         auto *rxv = new QRegularExpressionValidator(
                             QRegularExpression(QStringLiteral("^-?\\d{0,19}$")), le);
                         le->setValidator(rxv);
                         le->setPlaceholderText(QObject::tr("Solo enteros"));
-                        auto *f = new NumInputFilter(le, m_owner, idx, /*isInt=*/true, /*dp=*/0, le);
+                        auto *f = new NumInputFilter(le, m_owner, idx, true, 0, le);
                         le->installEventFilter(f);
                     } else {
                         const int dp = std::clamp(parseDecPlaces(fd.formato), 0, 4);
                         auto *dv = new QDoubleValidator(le);
                         dv->setDecimals(dp);
                         dv->setNotation(QDoubleValidator::StandardNotation);
-                        dv->setRange(-1e12, 1e12); // ajusta si lo deseas
+                        dv->setRange(-1e12, 1e12);
                         le->setValidator(dv);
-                        le->setPlaceholderText(
-                            QObject::tr("Número con hasta %1 decimales").arg(dp));
-                        // <<< instala filtro (usa dp)
-                        auto *f = new NumInputFilter(le, m_owner, idx, /*isInt=*/false, dp, le);
+                        le->setPlaceholderText(QObject::tr("Número con hasta %1 decimales").arg(dp));
+                        auto *f = new NumInputFilter(le, m_owner, idx, false, dp, le);
                         le->installEventFilter(f);
                     }
                 }
 
-                // 2-bis) Moneda: validador igual que número (con dp del formato)
                 if (t == "moneda") {
                     const int dp = std::clamp(parseDecPlaces(fd.formato), 0, 4);
                     auto *dv = new QDoubleValidator(le);
@@ -349,39 +306,29 @@ public:
                     dv->setNotation(QDoubleValidator::StandardNotation);
                     dv->setRange(-1e12, 1e12);
                     le->setValidator(dv);
-                    le->setPlaceholderText(
-                        QObject::tr("Monto con hasta %1 decimales").arg(dp));
-
-                    auto *f = new NumInputFilter(le, m_owner, idx, /*isInt=*/false, dp, le);
+                    le->setPlaceholderText(QObject::tr("Monto con hasta %1 decimales").arg(dp));
+                    auto *f = new NumInputFilter(le, m_owner, idx, false, dp, le);
                     le->installEventFilter(f);
                 }
 
                 if (t == "fecha_hora") {
                     auto *de = new QDateEdit(parent);
-
-                    // Formato + localización
-                    const QString base = baseFormatKey(fd.formato);  // "dd-MM-yy" | "dd/MM/yy" | "dd/MMMM/yyyy"
+                    const QString base = baseFormatKey(fd.formato);
                     de->setDisplayFormat(base.isEmpty() ? "dd/MM/yy" : base);
                     de->setLocale(QLocale(QLocale::Spanish, QLocale::Honduras));
                     de->setCalendarPopup(true);
-
-
                     de->setFrame(false);
                     de->setKeyboardTracking(false);
                     de->setFocusPolicy(Qt::StrongFocus);
-
-                    // Visual: evita 01/01/00 (en filas existentes muestra HOY)
                     de->setSpecialValueText("");
                     de->setMinimumDate(QDate(100, 1, 1));
                     de->setDate(QDate::currentDate());
 
-                    // --- MODO SOLO-CALENDARIO ---
-                    de->setButtonSymbols(QAbstractSpinBox::NoButtons);     // sin ↑/↓
+                    de->setButtonSymbols(QAbstractSpinBox::NoButtons);
                     if (auto *led = de->findChild<QLineEdit*>()) {
-                        led->setReadOnly(true);                             // no tecleo
-                        led->setContextMenuPolicy(Qt::NoContextMenu);       // sin pegar/menú
+                        led->setReadOnly(true);
+                        led->setContextMenuPolicy(Qt::NoContextMenu);
                     }
-                    // Bloquea rueda y teclas (excepto Tab/Shift+Tab/F4)
                     struct NoTypeFilter : QObject {
                         using QObject::QObject;
                         bool eventFilter(QObject *o, QEvent *e) override {
@@ -397,11 +344,8 @@ public:
                     };
                     de->installEventFilter(new NoTypeFilter(de));
 
-                    // touched y disparadores robustos
                     de->setProperty("touched", false);
-                    QObject::connect(de, &QDateEdit::dateChanged, de, [de]{
-                        de->setProperty("touched", true);
-                    });
+                    QObject::connect(de, &QDateEdit::dateChanged, de, [de]{ de->setProperty("touched", true); });
                     QObject::connect(de, &QDateEdit::editingFinished, de, [de]{
                         if (de->date().isValid() && de->date() != de->minimumDate())
                             de->setProperty("touched", true);
@@ -416,18 +360,12 @@ public:
                             });
                         }
                     }
-
-                    // Abrir popup al foco/click (usa tu filtro DatePopupOpener)
                     de->installEventFilter(new DatePopupOpener(de));
                     return de;
                 }
-
-
-
             }
         }
 
-        // Ajuste de altura de fila para que no desborde
         if (auto *view = qobject_cast<QTableView*>(parent->parent())) {
             const int want = le->sizeHint().height() + 2;
             if (view->rowHeight(idx.row()) < want)
@@ -437,7 +375,6 @@ public:
     }
 
     void setEditorData(QWidget *editor, const QModelIndex &idx) const override {
-
         if (auto *de = qobject_cast<QDateEdit*>(editor)) {
             const QString txt = m_owner->sheet()->item(idx.row(), idx.column())
             ? m_owner->sheet()->item(idx.row(), idx.column())->text()
@@ -449,17 +386,13 @@ public:
                 de->setDate(val);
                 de->setProperty("touched", false);
             } else {
-                // si estaba vacío/ilegible, usa HOY para no ver 01/01/00
                 de->setDate(QDate::currentDate());
-                de->setProperty("touched", true); // cuenta como dato si el usuario no toca más
+                de->setProperty("touched", true);
             }
             de->blockSignals(false);
             return;
-
         }
 
-
-        // 2) Número/Moneda: abrir editor con texto "limpio" (sin símbolo ni miles)
         if (auto *le = qobject_cast<QLineEdit*>(editor)) {
             if (!m_owner || !idx.isValid()) {
                 QStyledItemDelegate::setEditorData(editor, idx);
@@ -468,7 +401,6 @@ public:
             const FieldDef& fd = m_owner->schema()[idx.column()];
             const QString t = normType(fd.type);
             if (t == "numero" || t == "moneda") {
-                // Limpia símbolo (L, $), miles, NBSP, etc.
                 QTableWidgetItem *it = m_owner->sheet()->item(idx.row(), idx.column());
                 const QString raw = it ? it->text() : QString();
                 const QString cleaned = cleanNumericText(raw);
@@ -491,15 +423,12 @@ private:
     RecordsPage* m_owner;
 };
 
-
-
 RecordsPage::RecordsPage(QWidget* parent)
     : QWidget(parent)
     , ui(new Ui::RecordsPage)
 {
     ui->setupUi(this);
 
-    // ---- Conexiones de encabezado ----
     connect(ui->cbTabla,    QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &RecordsPage::onTablaChanged);
     connect(ui->leBuscar,   &QLineEdit::textChanged,
@@ -507,24 +436,19 @@ RecordsPage::RecordsPage(QWidget* parent)
     connect(ui->btnLimpiarBusqueda, &QToolButton::clicked,
             this, &RecordsPage::onLimpiarBusqueda);
 
-    // ---- Tabla ----
     connect(ui->twRegistros, &QTableWidget::itemSelectionChanged,
             this, &RecordsPage::onSelectionChanged);
     connect(ui->twRegistros, &QTableWidget::itemDoubleClicked,
             this, &RecordsPage::onItemDoubleClicked);
     connect(ui->twRegistros, &QTableWidget::itemChanged,
             this, &RecordsPage::onItemChanged);
-
-    // Después de crear ui->twRegistros y el resto de conexiones:
     connect(ui->twRegistros, &QTableWidget::currentCellChanged,
             this, &RecordsPage::onCurrentCellChanged);
 
-
-    // Config base de la tabla
     ui->twRegistros->setSelectionBehavior(QAbstractItemView::SelectRows);
     ui->twRegistros->setSelectionMode(QAbstractItemView::ExtendedSelection);
     ui->twRegistros->setEditTriggers(
-        QAbstractItemView::CurrentChanged      // ← inicia edición al cambiar de celda
+        QAbstractItemView::CurrentChanged
         | QAbstractItemView::SelectedClicked
         | QAbstractItemView::DoubleClicked
         | QAbstractItemView::EditKeyPressed);
@@ -533,29 +457,26 @@ RecordsPage::RecordsPage(QWidget* parent)
     ui->twRegistros->verticalHeader()->setVisible(false);
 
     auto *hh = ui->twRegistros->horizontalHeader();
-    // Editor inline bien encajado y scroll horizontal para texto largo
     ui->twRegistros->setItemDelegate(new DatasheetDelegate(this));
     ui->twRegistros->setWordWrap(false);
     ui->twRegistros->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     ui->twRegistros->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
 
-    // (opcional útil) doble-click en encabezado => auto-ajustar columna
     auto *hh2 = ui->twRegistros->horizontalHeader();
     connect(hh2, &QHeaderView::sectionDoubleClicked, this,
             [this](int c){ ui->twRegistros->resizeColumnToContents(c); });
     hh->setStretchLastSection(false);
     hh->setSectionResizeMode(QHeaderView::Interactive);
-    hh->setDefaultSectionSize(133); // ancho por columna
+    hh->setDefaultSectionSize(133);
     hh->setSortIndicatorShown(false);
     hh->setSectionsClickable(false);
 
-    // Limpiar “chrome”
     hideLegacyChrome();
     ui->cbTabla->clear();
     ui->twRegistros->setColumnCount(0);
     ui->twRegistros->setRowCount(0);
 
-    setMode(Mode::Idle);
+    setMode(RecordsPage::Mode::Idle);
     updateStatusLabels();
     updateNavState();
 }
@@ -574,7 +495,6 @@ void RecordsPage::setTableFromFieldDefs(const QString& name, const Schema& defs)
     m_tableName = name;
     m_schema    = defs;
 
-    // Reconstruir combo completo desde el modelo (evita nombres huérfanos)
     {
         QSignalBlocker block(ui->cbTabla);
         ui->cbTabla->clear();
@@ -588,28 +508,23 @@ void RecordsPage::setTableFromFieldDefs(const QString& name, const Schema& defs)
     applyDefs(defs);
     reloadRows();
 
-    // Refrescar al vuelo si cambian filas en el modelo
     m_rowsConn = connect(&DataModel::instance(), &DataModel::rowsChanged, this,
                          [this](const QString& t){ if (t == m_tableName) reloadRows(); });
 
-    setMode(Mode::Idle);
+    setMode(RecordsPage::Mode::Idle);
     updateStatusLabels();
     updateNavState();
 
-    // --- Mantener Datasheet en sync con DataModel ---
     auto& dm = DataModel::instance();
 
     connect(&dm, &DataModel::tableCreated, this, [this](const QString& t) {
-        // Si aparece una tabla nueva, aseguramos verla en el combo si no está
         if (ui->cbTabla->findText(t) < 0) ui->cbTabla->addItem(t);
     });
 
     connect(&dm, &DataModel::tableDropped, this, [this](const QString& t) {
-        // La quitamos del combo
         int idx = ui->cbTabla->findText(t);
         if (idx >= 0) ui->cbTabla->removeItem(idx);
 
-        // Si era la que estaba abierta, limpiamos TODO el datasheet
         if (t == m_tableName) {
             if (m_rowsConn) { disconnect(m_rowsConn); m_rowsConn = QMetaObject::Connection(); }
             m_tableName.clear();
@@ -618,25 +533,20 @@ void RecordsPage::setTableFromFieldDefs(const QString& name, const Schema& defs)
             ui->twRegistros->setRowCount(0);
             ui->twRegistros->setColumnCount(0);
             ui->leBuscar->clear();
-            setMode(Mode::Idle);
+            setMode(RecordsPage::Mode::Idle);
             updateStatusLabels();
             updateNavState();
         }
     });
 
     connect(&dm, &DataModel::schemaChanged, this, [this](const QString& t, const Schema& s) {
-        // Si cambia el esquema de la tabla actual, se reconstruyen columnas y filas
         if (t == m_tableName) {
             m_schema = s;
             applyDefs(s);
             reloadRows();
         }
     });
-
-
 }
-
-
 
 /* =================== Construcción de columnas =================== */
 
@@ -672,15 +582,12 @@ QString RecordsPage::formatCell(const FieldDef& fd, const QVariant& v) const
         const QString base = baseFormatKey(fd.formato);
         if (base == "dd-MM-yy")        return d.toString("dd-MM-yy");
         if (base == "dd/MM/yy")        return d.toString("dd/MM/yy");
-        if (base == "dd/MMMM/yyyy") {  // mes en texto
+        if (base == "dd/MMMM/yyyy") {
             QLocale es(QLocale::Spanish, QLocale::Honduras);
             return es.toString(d, "dd/MMMM/yyyy");
         }
-        // fallback consistente con el editor
         return d.toString("dd/MM/yy");
-
     }
-
 
     if (t == "numero") {
         const QString sz = fd.autoSubtipo.trimmed().toLower();
@@ -689,33 +596,28 @@ QString RecordsPage::formatCell(const FieldDef& fd, const QVariant& v) const
         if (isInt) {
             return QString::number(v.toLongLong());
         } else {
-            const int dp = parseDecPlaces(fd.formato);   // 0..4
+            const int dp = parseDecPlaces(fd.formato);
             return QString::number(v.toDouble(), 'f', dp);
         }
     }
 
     if (t == "moneda") {
         const int dp = parseDecPlaces(fd.formato);
-        // ⬇️ 1) si el base está vacío (acabas de cambiar a "Moneda"), usa "LPS" por defecto
         QString base = baseFormatKey(fd.formato).toUpper();
         if (base.isEmpty()) base = "LPS";
 
-        // ⬇️ 2) símbolos, incluyendo “M” para Millares
         QString sym;
         if (base.startsWith("LPS") || base.startsWith("HNL") || base.startsWith("L ")) sym = "L ";
         else if (base.startsWith("USD") || base.startsWith("$"))                      sym = "$";
         else if (base.startsWith("EUR") || base.startsWith("€"))                      sym = "€";
-        else if (base.startsWith("MILLARES") || base.startsWith("M"))
-            sym = "M ";
+        else if (base.startsWith("MILLARES") || base.startsWith("M"))                 sym = "M ";
 
         const QLocale loc = QLocale::system();
         return sym + loc.toString(v.toDouble(), 'f', dp);
     }
 
-    // Fallback seguro para texto/autonumeración/otros
     return v.toString();
 }
-
 
 void RecordsPage::reloadRows()
 {
@@ -723,12 +625,11 @@ void RecordsPage::reloadRows()
 
     const auto tables = DataModel::instance().tables();
     if (!tables.contains(m_tableName)) {
-        // La tabla ya no existe → limpiar y salir
         m_schema.clear();
         ui->twRegistros->clear();
         ui->twRegistros->setRowCount(0);
         ui->twRegistros->setColumnCount(0);
-        setMode(Mode::Idle);
+        setMode(RecordsPage::Mode::Idle);
         updateStatusLabels();
         updateNavState();
         return;
@@ -739,11 +640,6 @@ void RecordsPage::reloadRows()
     auto oldTriggers = ui->twRegistros->editTriggers();
     ui->twRegistros->setEditTriggers(QAbstractItemView::NoEditTriggers);
 
-    // 1) Cerrar TODOS los editores vivos y cellWidgets antes de reconstruir,
-    //    sin dejar residuos que se dibujen encima (0,0)
-    ui->twRegistros->setEditTriggers(QAbstractItemView::NoEditTriggers);
-
-    // a) elimina todos los editores temporales (qt_editing_widget)
     const auto editors = ui->twRegistros->viewport()->findChildren<QWidget*>(
         "qt_editing_widget", Qt::FindChildrenRecursively);
     for (QWidget *ed : editors) {
@@ -752,7 +648,6 @@ void RecordsPage::reloadRows()
         ed->deleteLater();
     }
 
-    // b) elimina cualquier cellWidget que hubiera en TODA la tabla
     for (int r = 0; r < ui->twRegistros->rowCount(); ++r) {
         for (int c = 0; c < ui->twRegistros->columnCount(); ++c) {
             if (QWidget *w = ui->twRegistros->cellWidget(r, c)) {
@@ -762,17 +657,11 @@ void RecordsPage::reloadRows()
         }
     }
 
-    // c) reinstala SIEMPRE tu delegado bueno (NO el genérico)
     ui->twRegistros->setItemDelegate(new DatasheetDelegate(this));
-
-
-
-    // 2) Sorting siempre OFF mientras exista la fila (New)
     ui->twRegistros->setSortingEnabled(false);
 
     const auto& rowsData = DataModel::instance().rows(m_tableName);
 
-    // 3) Preservar selección actual
     int prevSelRow = -1, prevSelCol = -1;
     if (auto *sm = ui->twRegistros->selectionModel()) {
         const auto idx = sm->currentIndex();
@@ -780,7 +669,6 @@ void RecordsPage::reloadRows()
         prevSelCol = idx.column();
     }
 
-    // 4) Reconstrucción con señales bloqueadas
     {
         QSignalBlocker block(ui->twRegistros);
         ui->twRegistros->clearContents();
@@ -816,19 +704,16 @@ void RecordsPage::reloadRows()
                     auto *it = new QTableWidgetItem(formatCell(fd, vv));
                     Qt::ItemFlags fl = it->flags();
                     if (fd.pk || t == "autonumeracion")
-                        fl &= ~Qt::ItemIsEditable;   // ID/PK no editable
+                        fl &= ~Qt::ItemIsEditable;
                     else
                         fl |=  Qt::ItemIsEditable;
                     it->setFlags(fl);
-                    // ver el contenido completo al pasar el mouse
                     it->setToolTip(formatCell(fd, vv));
-
                     ui->twRegistros->setItem(r, c, it);
                 }
             }
         }
 
-        // 5) Triggers de edición seguros (NO AllEditTriggers)
         ui->twRegistros->setEditTriggers(
             QAbstractItemView::CurrentChanged
             | QAbstractItemView::SelectedClicked
@@ -836,7 +721,6 @@ void RecordsPage::reloadRows()
             | QAbstractItemView::EditKeyPressed);
     }
 
-    // 6) Restaurar selección SIN disparar señales
     if (ui->twRegistros->rowCount() > 0) {
         int selRow = std::clamp(prevSelRow, 0, ui->twRegistros->rowCount() - 1);
         int selCol = std::clamp(prevSelCol, 0, ui->twRegistros->columnCount() - 1);
@@ -845,7 +729,6 @@ void RecordsPage::reloadRows()
         ui->twRegistros->selectRow(selRow);
     }
 
-    // 7) Defensa: jamás debe haber cellWidget en la columna ID de filas de datos
     int idCol = -1;
     for (int c = 0; c < m_schema.size(); ++c)
         if (normType(m_schema[c].type) == "autonumeracion") { idCol = c; break; }
@@ -857,10 +740,8 @@ void RecordsPage::reloadRows()
         }
     }
 
-    // 8) Fila (New) con editores al final
     addNewRowEditors();
 
-    // 9) “Pinear” el ID visible de la primera fila (por si algún editor lo tapaba)
     if (idCol >= 0) {
         const auto& vrows = DataModel::instance().rows(m_tableName);
         if (!vrows.isEmpty() && !vrows[0].isEmpty()) {
@@ -870,15 +751,12 @@ void RecordsPage::reloadRows()
             if (!it0) { it0 = new QTableWidgetItem; ui->twRegistros->setItem(0, idCol, it0); }
             it0->setFlags(it0->flags() & ~Qt::ItemIsEditable);
             it0->setData(Qt::DisplayRole, v0.isValid() && !v0.isNull() ? v0 : QVariant(1));
-            // qDebug() << "ID[0] =" << v0 << " itemText=" << it0->text();
         }
     }
 
-    // 10) No reactivar sorting aquí
     updateStatusLabels();
     updateNavState();
 
-    // Defensa final: si algún editor quedó vivo por eventos diferidos, elimínalo sin señales
     QTimer::singleShot(0, this, [this]{
         const auto editors2 = ui->twRegistros->viewport()->findChildren<QWidget*>(
             "qt_editing_widget", Qt::FindChildrenRecursively);
@@ -889,14 +767,9 @@ void RecordsPage::reloadRows()
         }
     });
 
-    // Restaura los triggers de edición originales
     ui->twRegistros->setEditTriggers(oldTriggers);
-
-
     m_isReloading = false;
 }
-
-
 
 /* =================== Nueva fila tipo Access =================== */
 
@@ -926,8 +799,7 @@ QWidget* RecordsPage::makeEditorFor(const FieldDef& fd) const
     if (t == "fecha_hora") {
         auto *de = new QDateEdit;
         de->setCalendarPopup(true);
-
-        const QString base = baseFormatKey(fd.formato);  // "dd-MM-yy" | "dd/MM/yy" | "dd/MMMM/yyyy"
+        const QString base = baseFormatKey(fd.formato);
         de->setDisplayFormat(base.isEmpty() ? "dd/MM/yy" : base);
         de->setLocale(QLocale(QLocale::Spanish, QLocale::Honduras));
         de->setSpecialValueText("");
@@ -936,17 +808,12 @@ QWidget* RecordsPage::makeEditorFor(const FieldDef& fd) const
         de->setKeyboardTracking(false);
         de->setFocusPolicy(Qt::StrongFocus);
 
-        // Marcar “tocado” cuando cambie
         de->setProperty("touched", false);
         connect(de, &QDateEdit::dateChanged, de, [de]{ de->setProperty("touched", true); });
 
-        // Usar un puntero no-const para conectar slots no-const
         auto *self = const_cast<RecordsPage*>(this);
-
-        // Preparar la siguiente (New) cuando cambie la fecha (sin cerrar popup)
         connect(de, &QDateEdit::dateChanged, self, &RecordsPage::prepareNextNewRow);
 
-        // Confirmar SOLO cuando el usuario selecciona en el calendario
         if (de->calendarPopup()) {
             if (auto *cal = de->calendarWidget()) {
                 connect(cal, &QCalendarWidget::clicked, self, [self, de](const QDate& d){
@@ -961,15 +828,9 @@ QWidget* RecordsPage::makeEditorFor(const FieldDef& fd) const
                 });
             }
         }
-
         return de;
     }
 
-
-
-
-
-    // recordspage.cpp (editor para 'moneda' en fila New) — usar QLineEdit
     if (t == "moneda") {
         auto *le = new QLineEdit;
         const int dp = std::clamp(parseDecPlaces(fd.formato), 0, 4);
@@ -979,38 +840,30 @@ QWidget* RecordsPage::makeEditorFor(const FieldDef& fd) const
         dv->setRange(-1e12, 1e12);
         le->setValidator(dv);
         le->setPlaceholderText(tr("Monto con hasta %1 decimales").arg(dp));
-
-        // mismo filtro que “Número” para puntos/comas y límite de decimales
         auto *f = new NumInputFilter(le, const_cast<RecordsPage*>(this),
                                      QModelIndex(), /*isInt=*/false, dp, le);
         le->installEventFilter(f);
-
-        // dispara preparación/commit SOLO cuando el usuario edita, no al enfocarlo
-        connect(le, &QLineEdit::textEdited,     this, &RecordsPage::prepareNextNewRow);
-        connect(le, &QLineEdit::editingFinished,this, &RecordsPage::commitNewRow);
+        connect(le, &QLineEdit::textEdited,      this, &RecordsPage::prepareNextNewRow);
+        connect(le, &QLineEdit::editingFinished, this, &RecordsPage::commitNewRow);
         return le;
     }
-
 
     if (t == "booleano") {
         auto *cb = new QCheckBox;
         cb->setTristate(false);
         connect(cb, &QCheckBox::checkStateChanged, this, &RecordsPage::prepareNextNewRow);
         connect(cb, &QCheckBox::checkStateChanged, this, &RecordsPage::commitNewRow);
-        // lo devolvemos tal cual; abajo soportamos tanto wrap como directo
         return cb;
     }
 
     if (t == "numero") {
         auto *le = new QLineEdit;
-
         const bool isInt = fd.autoSubtipo.trimmed().toLower().contains("byte")
                            || fd.autoSubtipo.trimmed().toLower().contains("entero")
                            || fd.autoSubtipo.trimmed().toLower().contains("integer")
                            || fd.autoSubtipo.trimmed().toLower().contains("long");
 
         if (isInt) {
-            // Solo enteros (permite vacío mientras editas)
             le->setValidator(new QRegularExpressionValidator(
                 QRegularExpression(QStringLiteral("^-?\\d{0,19}$")), le));
             le->setPlaceholderText(tr("Solo enteros"));
@@ -1019,60 +872,22 @@ QWidget* RecordsPage::makeEditorFor(const FieldDef& fd) const
             auto *dv = new QDoubleValidator(le);
             dv->setDecimals(dp);
             dv->setNotation(QDoubleValidator::StandardNotation);
-            dv->setRange(-1e12, 1e12); // ajusta si quieres
+            dv->setRange(-1e12, 1e12);
             le->setValidator(dv);
             le->setPlaceholderText(tr("Número con hasta %1 decimales").arg(dp));
         }
 
-        connect(le, &QLineEdit::textEdited, this, &RecordsPage::prepareNextNewRow);
+        connect(le, &QLineEdit::textEdited,      this, &RecordsPage::prepareNextNewRow);
         connect(le, &QLineEdit::editingFinished, this, &RecordsPage::commitNewRow);
 
-        {
-            const bool isInt = fd.autoSubtipo.trimmed().toLower().contains("byte")
-            || fd.autoSubtipo.trimmed().toLower().contains("entero")
-                || fd.autoSubtipo.trimmed().toLower().contains("integer")
-                || fd.autoSubtipo.trimmed().toLower().contains("long");
-            const int dp = std::clamp(parseDecPlaces(fd.formato), 0, 4);
-            auto *f = new NumInputFilter(le, const_cast<RecordsPage*>(this),
-                                         QModelIndex(), isInt, isInt ? 0 : dp, le);
-            le->installEventFilter(f);
-        }
+        const int dp = std::clamp(parseDecPlaces(fd.formato), 0, 4);
+        auto *f = new NumInputFilter(le, const_cast<RecordsPage*>(this),
+                                     QModelIndex(), isInt, isInt ? 0 : dp, le);
+        le->installEventFilter(f);
         return le;
     }
 
-
-    if (t == "texto_largo") {
-        auto *le = new QLineEdit; // inline simple
-
-        if (fd.size > 0) {
-            // Deja escribir normal y avisa + recorta al exceder
-            connect(le, &QLineEdit::textEdited, this,
-                    [this, le, max = fd.size, field = fd.name](const QString& s) {
-                        if (s.size() > max) {
-                            const QString cut = s.left(max);
-                            QSignalBlocker b(le);
-                            le->setText(cut);
-                            le->setCursorPosition(cut.size());
-
-                            // Tooltip pegado al editor (fila New)
-                            QToolTip::showText(
-                                le->mapToGlobal(QPoint(le->width(), le->height())),
-                                tr("Solo se aceptan %1 caracteres para \"%2\".\nSe recortó el texto.")
-                                    .arg(max).arg(field),
-                                le, le->rect(), 2000);
-                        }
-                    });
-        }
-
-        connect(le, &QLineEdit::textEdited, this, &RecordsPage::prepareNextNewRow);
-        connect(le, &QLineEdit::returnPressed, this, &RecordsPage::commitNewRow);
-        return le;
-    }
-
-    // texto corto / número
     auto *le = new QLineEdit;
-
-    // AVISO EN VIVO para Short Text (normType == "texto")
     if (normType(fd.type) == "texto" && fd.size > 0) {
         connect(le, &QLineEdit::textEdited, this,
                 [this, le, max = fd.size, field = fd.name](const QString& s) {
@@ -1081,8 +896,6 @@ QWidget* RecordsPage::makeEditorFor(const FieldDef& fd) const
                         QSignalBlocker b(le);
                         le->setText(cut);
                         le->setCursorPosition(cut.size());
-
-                        // Tooltip pegado al editor
                         QToolTip::showText(
                             le->mapToGlobal(QPoint(le->width(), le->height())),
                             tr("Solo se aceptan %1 caracteres para \"%2\".\nSe recortó el texto.")
@@ -1091,12 +904,10 @@ QWidget* RecordsPage::makeEditorFor(const FieldDef& fd) const
                     }
                 });
     }
-
-    connect(le, &QLineEdit::textEdited, this, &RecordsPage::prepareNextNewRow);
+    connect(le, &QLineEdit::textEdited,      this, &RecordsPage::prepareNextNewRow);
     connect(le, &QLineEdit::editingFinished, this, &RecordsPage::commitNewRow);
     return le;
 }
-
 
 QVariant RecordsPage::editorValue(QWidget* w, const QString& t) const
 {
@@ -1104,27 +915,20 @@ QVariant RecordsPage::editorValue(QWidget* w, const QString& t) const
 
     if (typ == "booleano") {
         if (auto *cb = qobject_cast<QCheckBox*>(w)) return cb->isChecked();
-        if (auto *cb2 = w->findChild<QCheckBox*>())   return cb2->isChecked();
+        if (auto *cb2 = w->findChild<QCheckBox*>()) return cb2->isChecked();
         return false;
     }
     if (typ == "autonumeracion") {
         if (auto *le = qobject_cast<QLineEdit*>(w)) return le->text().trimmed();
         return QVariant();
     }
-
-    // --- Fecha ---
     if (typ == "fecha_hora") {
         if (auto *de = qobject_cast<QDateEdit*>(w)) {
             const bool touched = de->property("touched").toBool();
-            // Si no tocó el control y la celda original estaba vacía, no guardes nada
-            // (RecordsPage usa este return para construir el QVariant a insertar)
-            if (!touched) {
-                return QVariant();  // deja NULL si no eligió
-            }
+            if (!touched) return QVariant();
             return QVariant(de->date());
         }
         if (auto *le = qobject_cast<QLineEdit*>(w)) {
-            // Respaldo: parsear por los 3 formatos
             QLocale es(QLocale::Spanish, QLocale::Honduras);
             const QString s = le->text().trimmed();
             QDate d = QDate::fromString(s, "dd-MM-yy");
@@ -1134,25 +938,20 @@ QVariant RecordsPage::editorValue(QWidget* w, const QString& t) const
         }
         return QVariant();
     }
-
     if (typ == "moneda") {
         if (auto *le = qobject_cast<QLineEdit*>(w)) {
-            // normaliza el texto y conviértelo a double
             const QString norm = cleanNumericText(le->text());
             bool ok = false;
             const double d = norm.toDouble(&ok);
             return ok ? QVariant(d) : QVariant();
         }
-        if (auto *ds = qobject_cast<QDoubleSpinBox*>(w)) {
-            return ds->value(); // por si quedara algún spinbox legacy
-        }
+        if (auto *ds = qobject_cast<QDoubleSpinBox*>(w)) return ds->value();
         return QVariant();
     }
 
     if (auto *le = qobject_cast<QLineEdit*>(w)) return le->text();
     return QVariant();
 }
-
 
 void RecordsPage::clearNewRowEditors()
 {
@@ -1164,51 +963,13 @@ void RecordsPage::clearNewRowEditors()
             else if (auto *cb = qobject_cast<QCheckBox*>(w)) cb->setChecked(false);
             else if (auto *chk = w->findChild<QCheckBox*>()) chk->setChecked(false);
             else if (auto *de  = qobject_cast<QDateEdit*>(w)) {
-                de->setDate(de->minimumDate());       // queda visualmente vacío
-                de->setProperty("touched", false);    // aún no eligió
+                de->setDate(de->minimumDate());
+                de->setProperty("touched", false);
             }
             else if (auto *ds  = qobject_cast<QDoubleSpinBox*>(w)) ds->setValue(0.0);
         }
     }
 }
-
-
-// void RecordsPage::addNewRowEditors(qint64 presetId)
-// {
-//     if (m_schema.isEmpty()) return;
-
-//     const int newRow = ui->twRegistros->rowCount();
-//     ui->twRegistros->insertRow(newRow);
-
-//     // localizar la primera columna autonumeración (ID)
-//     int idCol = -1;
-//     for (int c = 0; c < m_schema.size(); ++c) {
-//         if (normType(m_schema[c].type) == "autonumeracion") { idCol = c; break; }
-//     }
-
-//     // Preasigna el ID real y deja la celda NO editable (sin cellWidget)
-//     if (idCol >= 0) {
-//         qint64 idVal;
-//         if (presetId >= 0) {
-//             idVal = presetId;
-//         } else {
-//             // Primera (New) tras recargar: consulta al modelo una sola vez
-//             idVal = DataModel::instance().nextAutoNumber(m_tableName).toLongLong();
-//         }
-//         auto *it = new QTableWidgetItem;
-//         it->setData(Qt::DisplayRole, static_cast<qlonglong>(idVal)); // pinta como número, no texto
-//         it->setFlags(it->flags() & ~Qt::ItemIsEditable);
-//         ui->twRegistros->setItem(newRow, idCol, it);
-//     }
-
-//     // Resto de columnas: editores inline
-//     for (int c = 0; c < m_schema.size(); ++c) {
-//         if (c == idCol) continue;
-//         const FieldDef& fd = m_schema[c];
-//         QWidget* ed = makeEditorFor(fd);
-//         ui->twRegistros->setCellWidget(newRow, c, ed);
-//     }
-// }
 
 void RecordsPage::addNewRowEditors(qint64 /*presetId*/)
 {
@@ -1217,22 +978,19 @@ void RecordsPage::addNewRowEditors(qint64 /*presetId*/)
     const int newRow = ui->twRegistros->rowCount();
     ui->twRegistros->insertRow(newRow);
 
-    // localizar la primera columna autonumeración (ID)
     int idCol = -1;
     for (int c = 0; c < m_schema.size(); ++c) {
         if (normType(m_schema[c].type) == "autonumeracion") { idCol = c; break; }
     }
 
-    // PREASIGNA SOLO UN PLACEHOLDER VISUAL, SIN NÚMERO REAL
     if (idCol >= 0) {
         auto *it = new QTableWidgetItem;
         it->setFlags(it->flags() & ~Qt::ItemIsEditable);
-        it->setText("(New)");                 // ← solo visual
+        it->setText("(New)");
         it->setForeground(QColor("#777"));
         ui->twRegistros->setItem(newRow, idCol, it);
     }
 
-    // Resto de columnas: editores inline
     for (int c = 0; c < m_schema.size(); ++c) {
         if (c == idCol) continue;
         const FieldDef& fd = m_schema[c];
@@ -1241,13 +999,12 @@ void RecordsPage::addNewRowEditors(qint64 /*presetId*/)
     }
 }
 
-
 void RecordsPage::commitNewRow()
 {
     if (m_tableName.isEmpty() || m_schema.isEmpty()) return;
-    if (m_isCommitting || m_isReloading) return;  // ← NUEVO
+    if (m_isCommitting || m_isReloading) return;
 
-    m_isCommitting = true;                        // ← NUEVO
+    m_isCommitting = true;
 
     const int last   = ui->twRegistros->rowCount() - 1;
     const int rowIns = m_preparedNextNew ? (last - 1) : last;
@@ -1259,21 +1016,17 @@ void RecordsPage::commitNewRow()
         const QString t = normType(fd.type);
 
         if (t == "autonumeracion") {
-            // Deja que DataModel::insertRow() asigne el ID atómicamente
-            r[c] = QVariant();   // nulo => el modelo genera el siguiente ID
-
-
+            r[c] = QVariant();
         } else {
             QWidget* w = ui->twRegistros->cellWidget(rowIns, c);
             r[c] = editorValue(w, fd.type);
-            // --- Aviso si Short Text supera el límite en (New) ---
+
             if (normType(fd.type) == "texto" && fd.size > 0) {
                 QString s = r[c].toString();
                 if (s.size() > fd.size) {
-                    QString cut = s.left(fd.size);
+                    const QString cut = s.left(fd.size);
                     r[c] = cut;
 
-                    // Mostrar aviso cerca de la celda
                     const QModelIndex idx = ui->twRegistros->model()->index(rowIns, c);
                     const QRect rect = ui->twRegistros->visualRect(idx);
                     QToolTip::showText(
@@ -1282,40 +1035,33 @@ void RecordsPage::commitNewRow()
                             .arg(fd.size).arg(fd.name),
                         ui->twRegistros, rect, 2500);
 
-                    // Refleja el recorte en el editor si es QLineEdit
-                    if (QWidget *w2 = ui->twRegistros->cellWidget(rowIns, c)) {
-                        if (auto *le = qobject_cast<QLineEdit*>(w2)) {
-                            le->setText(cut);
-                            le->setCursorPosition(cut.size());
-                        }
+                    if (auto *le = qobject_cast<QLineEdit*>(w)) {
+                        le->setText(cut);
+                        le->setCursorPosition(cut.size());
                     }
                 }
             }
-
         }
     }
 
     QString err;
     if (!DataModel::instance().insertRow(m_tableName, r, &err)) {
         QMessageBox::warning(this, tr("No se pudo insertar"), err);
-        m_isCommitting = false;    // importantísimo: salir limpiando el flag
+        m_isCommitting = false;
         return;
     }
 
-
     m_preparedNextNew = false;
-    reloadRows();                                   // seguro ahora
+    reloadRows();
     const int rows = ui->twRegistros->rowCount();
     if (rows >= 2) ui->twRegistros->setCurrentCell(rows - 2, 0);
 
-    m_isCommitting = false;                         // ← NUEVO
+    m_isCommitting = false;
 }
-
-
 
 /* =================== Helpers de estado/UI =================== */
 
-void RecordsPage::setMode(Mode m)
+void RecordsPage::setMode(RecordsPage::Mode m)
 {
     m_mode = m;
     updateHeaderButtons();
@@ -1323,7 +1069,7 @@ void RecordsPage::setMode(Mode m)
 
 void RecordsPage::updateHeaderButtons()
 {
-    // no hay toolbar visible
+    // Toolbar oculta en esta vista
 }
 
 void RecordsPage::updateStatusLabels()
@@ -1339,7 +1085,6 @@ void RecordsPage::onTablaChanged(int /*index*/)
     const QString sel = ui->cbTabla->currentText().trimmed();
     const auto tables = DataModel::instance().tables();
 
-    // Si no hay selección o la tabla ya no existe → limpiar todo
     if (sel.isEmpty() || !tables.contains(sel)) {
         if (m_rowsConn) { disconnect(m_rowsConn); m_rowsConn = QMetaObject::Connection(); }
         m_tableName.clear();
@@ -1348,18 +1093,16 @@ void RecordsPage::onTablaChanged(int /*index*/)
         ui->twRegistros->setRowCount(0);
         ui->twRegistros->setColumnCount(0);
         ui->leBuscar->clear();
-        setMode(Mode::Idle);
+        setMode(RecordsPage::Mode::Idle);
         updateStatusLabels();
         updateNavState();
         return;
     }
 
-    // Si el usuario eligió otra tabla válida → cargarla
     if (sel != m_tableName) {
         setTableFromFieldDefs(sel, DataModel::instance().schema(sel));
     }
 }
-
 
 void RecordsPage::onBuscarChanged(const QString& text)
 {
@@ -1376,7 +1119,7 @@ void RecordsPage::onLimpiarBusqueda()
 
 /* ============ CRUD (slots vivos pero ocultos en UI) ============ */
 
-bool RecordsPage::editRecordDialog(const QString& title, const Schema& s, Record& r, bool isInsert, QString* errMsg)
+bool RecordsPage::editRecordDialog(const QString& title, const Schema& s, Record& r, bool, QString* errMsg)
 {
     QDialog dlg(this);
     dlg.setWindowTitle(title);
@@ -1407,31 +1150,20 @@ bool RecordsPage::editRecordDialog(const QString& title, const Schema& s, Record
         } else if (t == "fecha_hora") {
             auto *de = new QDateEdit;
             de->setCalendarPopup(true);
-
-            // Formato según schema
-            const QString base = baseFormatKey(s[i].formato); // "dd-MM-yy" | "dd/MM/yy" | "dd-MMMM-yyyy"
+            const QString base = baseFormatKey(s[i].formato);
             de->setDisplayFormat(base.isEmpty() ? "dd/MM/yy" : base);
-
-            // Español para "MMMM"
             de->setLocale(QLocale(QLocale::Spanish, QLocale::Honduras));
-
-            // NACE VACÍO: usar specialValueText para mostrar vacío
             de->setSpecialValueText("");
             de->setMinimumDate(QDate(100,1,1));
             de->setDate(QDate::currentDate());
-
-            // Si el registro traía un valor válido, úsalo
             if (r[i].canConvert<QDate>() && r[i].toDate().isValid())
                 de->setDate(r[i].toDate());
-
             w = de;
-
-
         } else if (t == "booleano") {
             auto *cb = new QCheckBox("Sí"); cb->setChecked(r[i].toBool()); w = cb;
         } else if (t == "texto_largo") {
             auto *pt = new QPlainTextEdit; pt->setPlainText(r[i].toString()); w = pt;
-        } else { // texto corto
+        } else {
             auto *le = new QLineEdit; le->setText(r[i].toString()); w = le;
         }
 
@@ -1520,7 +1252,6 @@ int  RecordsPage::currentSortColumn() const { return ui->twRegistros->currentCol
 const Schema& RecordsPage::schema() const { return m_schema; }
 QTableWidget* RecordsPage::sheet()  const { return ui->twRegistros; }
 
-
 /* =================== “Datasheet mínimo”: ocultar controles legacy =================== */
 void RecordsPage::hideLegacyChrome()
 {
@@ -1528,11 +1259,9 @@ void RecordsPage::hideLegacyChrome()
         if (auto *w = this->findChild<QWidget*>(name)) w->hide();
     };
 
-    // 1) Búsqueda (line edit + X)
     hideByObjectName("leBuscar");
     hideByObjectName("btnLimpiarBusqueda");
 
-    // 2) Panel derecho (editor)
     for (auto *sp : findChildren<QSplitter*>()) {
         if (sp->count() >= 2) {
             if (auto *right = sp->widget(1)) right->hide();
@@ -1549,7 +1278,6 @@ void RecordsPage::hideLegacyChrome()
     hideByObjectName("btnLimpiarForm");
     hideByObjectName("btnGenerarDummy");
 
-    // 3) Toolbar CRUD y “Ver eliminados”
     hideByObjectName("btnInsertar");
     hideByObjectName("btnEditar");
     hideByObjectName("btnEliminar");
@@ -1560,7 +1288,6 @@ void RecordsPage::hideLegacyChrome()
         if (txt.contains("eliminad")) cb->hide();
     }
 
-    // 4) Paginación y estado inferior
     hideByObjectName("btnPrimero");
     hideByObjectName("btnAnterior");
     hideByObjectName("btnSiguiente");
@@ -1570,7 +1297,6 @@ void RecordsPage::hideLegacyChrome()
     hideByObjectName("lblStatus");
     hideByObjectName("lblEstado");
 
-    // Barrido por patrones
     for (auto *w : findChildren<QWidget*>()) {
         const QString obj = w->objectName().toLower();
         if (obj.contains("status") || obj.contains("pagina") || obj.contains("total"))
@@ -1599,7 +1325,7 @@ Record RecordsPage::rowToRecord(int row) const
 
         if (t == "fecha_hora") {
             const FieldDef& fdf = m_schema[c];
-            const QString base = baseFormatKey(fdf.formato);   // "dd-MM-yy" | "dd/MM/yy" | "dd/MMMM/yyyy"
+            const QString base = baseFormatKey(fdf.formato);
             QLocale es(QLocale::Spanish, QLocale::Honduras);
 
             QDate d;
@@ -1608,13 +1334,10 @@ Record RecordsPage::rowToRecord(int row) const
             else if (base == "dd/MMMM/yyyy")
                 d = es.toDate(txt, "dd/MMMM/yyyy");
 
-            // Fallbacks por si en alguna parte quedó ISO
-            if (!d.isValid())            d = QDate::fromString(txt, Qt::ISODate);   // "yyyy-MM-dd"
+            if (!d.isValid())            d = QDate::fromString(txt, Qt::ISODate);
 
             rec[c] = d.isValid() ? QVariant(d) : QVariant();
             continue;
-
-
 
         } else if (t == "moneda" || t == "numero") {
             const QString norm = cleanNumericText(txt);
@@ -1623,19 +1346,17 @@ Record RecordsPage::rowToRecord(int row) const
             if (ok) {
                 rec[c] = d;
             } else {
-                // ← Evita vaciar la celda: conserva el valor anterior del modelo
                 const auto &rows = DataModel::instance().rows(m_tableName);
                 if (row >= 0 && row < rows.size() && c < rows[row].size())
                     rec[c] = rows[row][c];
                 else
-                    rec[c] = QVariant(); // fallback
+                    rec[c] = QVariant();
             }
         } else if (t == "booleano") {
-            rec[c] = false; // suele venir como cellWidget
+            rec[c] = false;
         } else if (t == "autonumeracion") {
             rec[c] = txt;
-
-        } else { // texto / texto_largo
+        } else {
             rec[c] = txt;
         }
     }
@@ -1654,13 +1375,11 @@ void RecordsPage::onItemChanged(QTableWidgetItem* it)
     if (row == last) return;
     if (normType(m_schema[col].type) == "autonumeracion") return;
 
-    // Evita reentradas mientras actualizas
     m_isCommitting = true;
     QSignalBlocker guard(ui->twRegistros);
 
     Record r = rowToRecord(row);
 
-    // --- Aviso si Short Text supera el límite ---
     const FieldDef& fd = m_schema[col];
     bool overflowed = false;
     QString cutText;
@@ -1670,13 +1389,12 @@ void RecordsPage::onItemChanged(QTableWidgetItem* it)
         if (current.size() > fd.size) {
             overflowed = true;
             cutText = current.left(fd.size);
-            r[col] = cutText;  // Enviar ya recortado al modelo
+            r[col] = cutText;
         }
     }
 
     QString err;
     if (!DataModel::instance().updateRow(m_tableName, row, r, &err)) {
-        // restaurar solo la celda editada
         const auto rows = DataModel::instance().rows(m_tableName);
         if (row >= 0 && row < rows.size() && col < rows[row].size()) {
             const FieldDef& fd = m_schema[col];
@@ -1694,9 +1412,7 @@ void RecordsPage::onItemChanged(QTableWidgetItem* it)
     } else {
         if (auto *okItem = ui->twRegistros->item(row, col))
             okItem->setBackground(Qt::NoBrush);
-        // ▼ AQUÍ va tu bloque
         if (overflowed) {
-            // Reflejar en UI sin reentrar (ya hay QSignalBlocker guard)
             if (auto *cell = ui->twRegistros->item(row, col))
                 cell->setText(cutText);
 
@@ -1712,9 +1428,6 @@ void RecordsPage::onItemChanged(QTableWidgetItem* it)
     m_isCommitting = false;
 }
 
-
-
-
 /* =================== Slots legacy expuestos =================== */
 
 void RecordsPage::onPrimero()  { if (ui->twRegistros->rowCount() > 0) ui->twRegistros->selectRow(0); }
@@ -1726,53 +1439,8 @@ void RecordsPage::sortAscending()  {}
 void RecordsPage::sortDescending() {}
 void RecordsPage::clearSorting()   {}
 
-
 void RecordsPage::onLimpiarFormulario() { limpiarFormulario(); }
 void RecordsPage::onGenerarDummyFila()  {}
-
-// void RecordsPage::prepareNextNewRow()
-// {
-//     if (m_preparedNextNew) return;
-//     if (ui->twRegistros->rowCount() <= 0) return;
-
-//     // Guarda la celda activa
-//     const int curRow = ui->twRegistros->currentRow();
-//     const int curCol = ui->twRegistros->currentColumn();
-
-//     // Última fila existente (la (New) actual)
-//     const int prevRow = ui->twRegistros->rowCount() - 1;
-
-//     // Encontrar columna ID
-//     int idCol = -1;
-//     for (int c = 0; c < m_schema.size(); ++c) {
-//         if (normType(m_schema[c].type) == "autonumeracion") { idCol = c; break; }
-//     }
-
-//     // Calcular el ID de la nueva (New) como (ID de la (New) actual) + 1
-//     qint64 nextIdPreset = -1;
-//     if (idCol >= 0) {
-//         if (auto *it = ui->twRegistros->item(prevRow, idCol)) {
-//             bool ok = false;
-//             const qint64 lastNewId = it->text().toLongLong(&ok);
-//             if (ok) nextIdPreset = lastNewId + 1;
-//         }
-//     }
-
-//     // Evitar señales durante la inserción
-//     QSignalBlocker block(ui->twRegistros);
-
-//     // Insertar nueva fila (New) con ID preasignado incremental
-//     addNewRowEditors(nextIdPreset);
-
-//     // Restaurar foco donde estaba el usuario
-//     if (curRow >= 0 && curCol >= 0) {
-//         ui->twRegistros->setCurrentCell(curRow, curCol);
-//         if (QWidget *ed = ui->twRegistros->cellWidget(curRow, curCol))
-//             ed->setFocus();
-//     }
-
-//     m_preparedNextNew = true;
-// }
 
 void RecordsPage::prepareNextNewRow()
 {
@@ -1786,28 +1454,21 @@ void RecordsPage::prepareNextNewRow()
             QString t;
             if (auto *le = qobject_cast<QLineEdit*>(w))        t = le->text().trimmed();
             else if (auto *de = qobject_cast<QDateEdit*>(w)) {
-                // cuenta como dato SOLO si eligió algo
                 const bool touched = de->property("touched").toBool();
                 t = (touched && de->date() != de->minimumDate()) ? "x" : "";
             }
             else if (auto *cb = qobject_cast<QCheckBox*>(w))   t = cb->isChecked() ? "1" : "";
-            // Evita contar "0", "0.0", "0.00" como "datos"
             if (!t.isEmpty() && t != "0" && t != "0.0" && t != "0.00") { hasData = true; break; }
         }
     }
     if (!hasData) return;
 
-    // Guarda la celda activa
     const int curRow = ui->twRegistros->currentRow();
     const int curCol = ui->twRegistros->currentColumn();
 
-    // Evitar señales durante la inserción de la nueva (New)
     QSignalBlocker block(ui->twRegistros);
+    addNewRowEditors(-1);
 
-    // Inserta la fila (New) SIN preasignar ID (el modelo lo generará al insertar)
-    addNewRowEditors(-1);   // el parámetro se ignora en tu nueva implementación
-
-    // Restaurar foco donde estaba el usuario
     if (curRow >= 0 && curCol >= 0) {
         ui->twRegistros->setCurrentCell(curRow, curCol);
         if (QWidget *ed = ui->twRegistros->cellWidget(curRow, curCol))
@@ -1817,13 +1478,11 @@ void RecordsPage::prepareNextNewRow()
     m_preparedNextNew = true;
 }
 
-
 void RecordsPage::onCurrentCellChanged(int currentRow, int, int previousRow, int)
 {
-    if (m_isReloading || m_isCommitting) return;               // guard
+    if (m_isReloading || m_isCommitting) return;
     const int last = ui->twRegistros->rowCount() - 1;
 
-    // ⇩⇩⇩ NUEVO: al entrar a la última fila, permitir preparar otra (New)
     if (currentRow == last) {
         m_preparedNextNew = false;
     }
@@ -1832,9 +1491,7 @@ void RecordsPage::onCurrentCellChanged(int currentRow, int, int previousRow, int
         && currentRow != previousRow
         && previousRow == last)
     {
-        if (!m_preparedNextNew) return;    // ⟵ NO confirmar si la (New) estaba vacía
+        if (!m_preparedNextNew) return;
         commitNewRow();
     }
 }
-
-

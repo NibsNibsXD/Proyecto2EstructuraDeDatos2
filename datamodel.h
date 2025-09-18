@@ -12,7 +12,6 @@
 // --- Relaciones (FK) ---
 enum class FkAction { Restrict, Cascade, SetNull };
 
-
 struct ForeignKey {
     QString childTable;   // tabla hija (donde vive la FK)
     int     childCol = -1;
@@ -36,7 +35,7 @@ struct FieldDef {
     // --- Autonumeración ---
     // Subtipo: "Long Integer" o "Replication ID" (GUID). Default Long Integer
     QString autoSubtipo = "Long Integer";
-    //New values: "Increment" o "Random" (solo Long Integer). Default Increment
+    // New values: "Increment" o "Random" (solo Long Integer). Default Increment
     QString autoNewValues = "Increment";
     QString mascaraEntrada;
     QString titulo;
@@ -87,6 +86,8 @@ public:
     int  rowCount(const QString& name) const;
     const QVector<Record>& rows(const QString& name) const;
 
+    // NOTA: estas firmas se mantienen para no romper nada;
+    // internamente usarán Avail List (reutilización de huecos + tombstones)
     bool insertRow(const QString& name, Record r, QString* err = nullptr);
     bool updateRow(const QString& name, int row, const Record& r, QString* err = nullptr);
     bool removeRows(const QString& name, const QList<int>& rows, QString* err = nullptr);
@@ -97,6 +98,17 @@ public:
     QVariant nextAutoNumber(const QString& name) const;   // siguiente autonum
     QString tableDescription(const QString& table) const; // descripción de tabla
     void    setTableDescription(const QString& table, const QString& desc);
+
+    // ---------- Avail List / Compact / Métricas ----------
+    // Compacta la tabla eliminando tombstones y limpiando la free list. Devuelve cuántos huecos se removieron.
+    int compactTable(const QString& table, QString* err = nullptr);
+
+    struct AvailStats {
+        int total{0};     // tamaño del vector interno (incluye tombstones)
+        int deleted{0};   // filas marcadas como tombstone
+        int freeSlots{0}; // posiciones disponibles en la free list
+    };
+    AvailStats availStats(const QString& table) const;
 
 signals:
     void tableCreated(const QString& name);
@@ -124,9 +136,19 @@ private:
     bool handleParentDeletes(const QString& parentTable, const QList<int>& parentRows,
                              QString* err);
 
+    // ---------- Avail List internals ----------
+    // Free list por tabla: contiene índices de filas "tombstone" reutilizables (LIFO).
+    QMap<QString, QVector<int>> m_freeList;
+
+    // Consideramos "tombstone" a un Record vacío -> hueco reutilizable en Avail List.
+    static inline bool isTombstone(const Record& r) { return r.isEmpty(); }
+
+    // Asegura que existan entradas para tabla en mapas internos (schemas, data, freeList).
+    void ensureTableExists(const QString& table);
+
 private:
     QMap<QString, Schema>          m_schemas; // tabla -> schema
-    QMap<QString, QVector<Record>> m_data;    // tabla -> filas
+    QMap<QString, QVector<Record>> m_data;    // tabla -> filas (incluye tombstones)
     QMap<QString, QString>         m_tableDescriptions; // nombre -> descripción
 };
 
