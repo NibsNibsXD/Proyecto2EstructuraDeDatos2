@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QMetaObject>
 #include "datamodel.h"   // FieldDef / Schema / DataModel
+#include <QTableWidget>
 
 class QTableWidgetItem;
 
@@ -25,6 +26,8 @@ signals:
     void navState(int cur, int tot, bool canPrev, bool canNext);
 
 public slots:
+
+
     // Integración con TablesPage/Shell
     void setTableFromFieldDefs(const QString& name, const Schema& defs);
 
@@ -38,6 +41,8 @@ public slots:
     void sortAscending();
     void sortDescending();
     void clearSorting();
+    const Schema& schema() const;
+    QTableWidget* sheet() const;
 
 private slots:
     // Encabezado / acciones
@@ -64,6 +69,7 @@ private slots:
     void onSiguiente();
     void onUltimo();
     void onCurrentCellChanged(int currentRow, int currentCol, int previousRow, int previousCol);
+
 
 
 private:

@@ -40,7 +40,6 @@ struct FieldDef {
     QString autoNewValues = "Increment";
     QString mascaraEntrada;
     QString titulo;
-    QString valorPredeterminado;
     QString reglaValidacion;
     QString textoValidacion;
     bool    requerido = false;

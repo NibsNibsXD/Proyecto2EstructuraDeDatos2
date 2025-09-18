@@ -69,7 +69,6 @@ private:
     // General
     QComboBox   *propFormato = nullptr;      // texto "Formato" para tipos NO auto
     QComboBox    *propAutoFormato = nullptr;  // Long Integer / Replication ID (solo auto)
-    QLineEdit    *propValorPred = nullptr;
 
 
     QLineEdit   *propTextSize = nullptr;
