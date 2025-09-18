@@ -43,6 +43,8 @@
 #include <QGuiApplication>
 #include <QFocusEvent>
 #include <QMouseEvent>
+#include <QCalendarWidget>
+#include <QCoreApplication>
 
 
 
@@ -362,25 +364,64 @@ public:
                     de->setDisplayFormat(base.isEmpty() ? "dd/MM/yy" : base);
                     de->setLocale(QLocale(QLocale::Spanish, QLocale::Honduras));
                     de->setCalendarPopup(true);
+
+
                     de->setFrame(false);
                     de->setKeyboardTracking(false);
                     de->setFocusPolicy(Qt::StrongFocus);
 
-                    // Visual: no “01/01/00”, usa HOY en filas existentes
+                    // Visual: evita 01/01/00 (en filas existentes muestra HOY)
                     de->setSpecialValueText("");
                     de->setMinimumDate(QDate(100, 1, 1));
                     de->setDate(QDate::currentDate());
 
-                    // touched solo una vez (el bloque estaba duplicado)
+                    // --- MODO SOLO-CALENDARIO ---
+                    de->setButtonSymbols(QAbstractSpinBox::NoButtons);     // sin ↑/↓
+                    if (auto *led = de->findChild<QLineEdit*>()) {
+                        led->setReadOnly(true);                             // no tecleo
+                        led->setContextMenuPolicy(Qt::NoContextMenu);       // sin pegar/menú
+                    }
+                    // Bloquea rueda y teclas (excepto Tab/Shift+Tab/F4)
+                    struct NoTypeFilter : QObject {
+                        using QObject::QObject;
+                        bool eventFilter(QObject *o, QEvent *e) override {
+                            if (e->type() == QEvent::Wheel) return true;
+                            if (e->type() == QEvent::KeyPress) {
+                                auto *k = static_cast<QKeyEvent*>(e);
+                                if (k->key()==Qt::Key_Tab || k->key()==Qt::Key_Backtab || k->key()==Qt::Key_F4)
+                                    return QObject::eventFilter(o,e);
+                                return true;
+                            }
+                            return QObject::eventFilter(o,e);
+                        }
+                    };
+                    de->installEventFilter(new NoTypeFilter(de));
+
+                    // touched y disparadores robustos
                     de->setProperty("touched", false);
                     QObject::connect(de, &QDateEdit::dateChanged, de, [de]{
                         de->setProperty("touched", true);
                     });
+                    QObject::connect(de, &QDateEdit::editingFinished, de, [de]{
+                        if (de->date().isValid() && de->date() != de->minimumDate())
+                            de->setProperty("touched", true);
+                    });
+                    if (de->calendarPopup()) {
+                        if (auto *cal = de->calendarWidget()) {
+                            QObject::connect(cal, &QCalendarWidget::clicked,   de, [de](const QDate& d){
+                                de->setDate(d); de->setProperty("touched", true);
+                            });
+                            QObject::connect(cal, &QCalendarWidget::activated, de, [de](const QDate& d){
+                                de->setDate(d); de->setProperty("touched", true);
+                            });
+                        }
+                    }
 
-                    // Abrir popup al foco/click
+                    // Abrir popup al foco/click (usa tu filtro DatePopupOpener)
                     de->installEventFilter(new DatePopupOpener(de));
                     return de;
                 }
+
 
 
             }
@@ -628,13 +669,16 @@ QString RecordsPage::formatCell(const FieldDef& fd, const QVariant& v) const
         const QDate d = v.toDate();
         if (!d.isValid()) return QString();
 
-        const QString base = baseFormatKey(fd.formato); // "dd-MM-yy" | "dd/MM/yy" | "dd/MMMM/yyyy"
-        if (base == "dd-MM-yy")  return d.toString("dd-MM-yy");
-        if (base == "dd/MM/yy")  return d.toString("dd/MM/yy");
+        const QString base = baseFormatKey(fd.formato);
+        if (base == "dd-MM-yy")        return d.toString("dd-MM-yy");
+        if (base == "dd/MM/yy")        return d.toString("dd/MM/yy");
+        if (base == "dd/MMMM/yyyy") {  // mes en texto
+            QLocale es(QLocale::Spanish, QLocale::Honduras);
+            return es.toString(d, "dd/MMMM/yyyy");
+        }
+        // fallback consistente con el editor
+        return d.toString("dd/MM/yy");
 
-        // dd/MESTEXTO/YYYY -> "dd/MMMM/yyyy" con mes en español
-        QLocale es(QLocale::Spanish, QLocale::Honduras);
-        return es.toString(d, "dd/MMMM/yyyy"); // p.ej. 05/enero/2025
     }
 
 
@@ -882,26 +926,46 @@ QWidget* RecordsPage::makeEditorFor(const FieldDef& fd) const
     if (t == "fecha_hora") {
         auto *de = new QDateEdit;
         de->setCalendarPopup(true);
-        const QString base = baseFormatKey(fd.formato);
+
+        const QString base = baseFormatKey(fd.formato);  // "dd-MM-yy" | "dd/MM/yy" | "dd/MMMM/yyyy"
         de->setDisplayFormat(base.isEmpty() ? "dd/MM/yy" : base);
         de->setLocale(QLocale(QLocale::Spanish, QLocale::Honduras));
         de->setSpecialValueText("");
         de->setMinimumDate(QDate(100,1,1));
-        de->setDate(QDate::currentDate());     // (New) muestra HOY, nada de 01/01/00
+        de->setDate(QDate::currentDate());
         de->setKeyboardTracking(false);
         de->setFocusPolicy(Qt::StrongFocus);
 
-        // flags + disparos
+        // Marcar “tocado” cuando cambie
         de->setProperty("touched", false);
         connect(de, &QDateEdit::dateChanged, de, [de]{ de->setProperty("touched", true); });
 
-        // 1) Prepara la siguiente (New) cuando cambia la fecha
-        connect(de, &QDateEdit::dateChanged, this, &RecordsPage::prepareNextNewRow);
-        // 2) Y TAMBIÉN cuando cierra el editor (por si dejó la misma fecha de hoy)
-        connect(de, &QDateEdit::editingFinished, this, &RecordsPage::prepareNextNewRow);
+        // Usar un puntero no-const para conectar slots no-const
+        auto *self = const_cast<RecordsPage*>(this);
+
+        // Preparar la siguiente (New) cuando cambie la fecha (sin cerrar popup)
+        connect(de, &QDateEdit::dateChanged, self, &RecordsPage::prepareNextNewRow);
+
+        // Confirmar SOLO cuando el usuario selecciona en el calendario
+        if (de->calendarPopup()) {
+            if (auto *cal = de->calendarWidget()) {
+                connect(cal, &QCalendarWidget::clicked, self, [self, de](const QDate& d){
+                    de->setDate(d);
+                    de->setProperty("touched", true);
+                    QTimer::singleShot(0, self, [self]{ self->commitNewRow(); });
+                });
+                connect(cal, &QCalendarWidget::activated, self, [self, de](const QDate& d){
+                    de->setDate(d);
+                    de->setProperty("touched", true);
+                    QTimer::singleShot(0, self, [self]{ self->commitNewRow(); });
+                });
+            }
+        }
 
         return de;
     }
+
+
 
 
 
@@ -1176,8 +1240,6 @@ void RecordsPage::addNewRowEditors(qint64 /*presetId*/)
         ui->twRegistros->setCellWidget(newRow, c, ed);
     }
 }
-
-
 
 
 void RecordsPage::commitNewRow()
@@ -1760,6 +1822,12 @@ void RecordsPage::onCurrentCellChanged(int currentRow, int, int previousRow, int
 {
     if (m_isReloading || m_isCommitting) return;               // guard
     const int last = ui->twRegistros->rowCount() - 1;
+
+    // ⇩⇩⇩ NUEVO: al entrar a la última fila, permitir preparar otra (New)
+    if (currentRow == last) {
+        m_preparedNextNew = false;
+    }
+
     if (previousRow >= 0 && currentRow >= 0
         && currentRow != previousRow
         && previousRow == last)
