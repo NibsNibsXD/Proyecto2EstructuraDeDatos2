@@ -5,8 +5,11 @@
 #include <QMetaObject>
 #include "datamodel.h"   // FieldDef / Schema / DataModel
 #include <QTableWidget>
+#include <QToolButton>
 
 class QTableWidgetItem;
+
+
 
 QT_BEGIN_NAMESPACE
 namespace Ui { class RecordsPage; }
@@ -24,6 +27,9 @@ signals:
     void recordUpdated(const QString& tabla, int row);
     void recordDeleted(const QString& tabla, const QList<int>& rows);
     void navState(int cur, int tot, bool canPrev, bool canNext);
+public:
+    void showRequiredPopup(const QModelIndex& ix, const QString& msg, int msec = 1800);
+
 
 public slots:
     // Integración con TablesPage/Shell
@@ -31,6 +37,7 @@ public slots:
 
     // Navegación (no visible; compat.)
     void navFirst();
+
     void navPrev();
     void navNext();
     void navLast();
@@ -42,6 +49,8 @@ public slots:
 
     const Schema& schema() const;
     QTableWidget* sheet() const;
+    bool hasUnfilledRequired(QModelIndex* where = nullptr) const;
+
 
 private slots:
     // Encabezado / acciones
@@ -53,6 +62,7 @@ private slots:
     void onEliminar();
     void onGuardar();
     void onCancelar();
+
 
     // Tabla
     void onSelectionChanged();
@@ -73,6 +83,22 @@ private slots:
 
 private:
     enum class Mode { Idle, Insert, Edit };
+    int m_lastTablaIndex = -1;
+    bool requiredEmptyInRow(int vrow, int* whichCol = nullptr) const;
+
+    bool m_reqPopupBusy = false;
+
+
+
+
+
+    // Mapea fila visible (vista) -> fila real en DataModel
+    QVector<int> m_rowMap;
+
+    inline int dataRowForView(int vr) const {
+        return (vr >= 0 && vr < m_rowMap.size()) ? m_rowMap[vr] : -1;
+    }
+
 
     // Anti-reentradas / estado interno
     bool m_isReloading  = false;
@@ -86,6 +112,9 @@ private:
     QString m_tableName;
     Schema  m_schema;
     QMetaObject::Connection m_rowsConn;
+
+    QToolButton* m_btnEliminar = nullptr;
+    void onEliminarSeleccion();
 
     // ---- Helpers de UI ----
     void setMode(RecordsPage::Mode m);  // ← firma explícita para enlazador

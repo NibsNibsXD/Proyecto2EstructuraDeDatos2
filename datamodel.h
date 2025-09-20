@@ -52,11 +52,22 @@ using Schema = QList<FieldDef>;
 // Una fila de datos (mismo orden/longitud que el Schema)
 using Record = QVector<QVariant>;
 
+
+
+
 /* ========================= Núcleo de datos ========================= */
 class DataModel : public QObject {
     Q_OBJECT
 public:
     static DataModel& instance();
+    void markColumnEdited(const QString& table, const QString& colName);
+
+
+    QVariant nextAutoNumber(const QString& name);  // ← sin const
+
+    int autoColumn(const Schema& s) const;
+
+
 
     /* ---------- Persistencia ---------- */
     bool loadFromJson(const QString& file, QString* err = nullptr);
@@ -121,9 +132,21 @@ private:
     explicit DataModel(QObject* parent = nullptr);
     Q_DISABLE_COPY(DataModel)
 
+    // Baseline de valores cuando una columna salió de Autonumeración
+    QHash<QString, QHash<QString, QVector<QVariant>>> m_autoBaseline;
+
+    // Conjunto de columnas que fueron AUTONUM y han sido EDITADAS desde que salieron
+    QHash<QString, QSet<QString>> m_autoEditedSinceLeave;
+
     /* ---------------- Normalización / validación por tipo ---------------- */
     // Normaliza/convierte un valor según FieldDef::type (usada por validate)
     bool normalizeValue(const FieldDef& col, QVariant& v, QString* err) const;
+
+    // Último ID emitido por tabla (no disminuye cuando borras)
+    QHash<QString, qint64> m_lastIssuedId;
+
+    // Inicializa el contador al máximo actual de la tabla si aún no está
+    void ensureAutoCounterInitialized(const QString& table);
 
     // Normaliza etiqueta de tipo (igual que en UI): "numero","moneda","fecha_hora", etc.
     QString normType(const QString& t) const;
@@ -152,7 +175,7 @@ private:
                           const Record& candidate, QString* err) const;
 
     // Autonumeración: asigna MAX+1 si el valor viene vacío
-    void assignAutonumberIfNeeded(const QString& table, const Schema& s, Record& r) const;
+    void assignAutonumberIfNeeded(const QString& table, const Schema& s, Record& r);
 
     /* ----------------- Otros helpers existentes ----------------- */
     bool isValidTableName(const QString& n) const;

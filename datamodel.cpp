@@ -23,6 +23,14 @@ DataModel& DataModel::instance() {
     return inst;
 }
 
+int DataModel::autoColumn(const Schema& s) const {
+    for (int i = 0; i < s.size(); ++i)
+        if (normType(s[i].type) == "autonumeracion")
+            return i;
+    return -1;
+}
+
+
 DataModel::DataModel(QObject* parent) : QObject(parent) {}
 
 /* ====================== Helpers (libres) ====================== */
@@ -158,75 +166,105 @@ bool DataModel::checkForeignKeys(const QString& table, const Schema& s,
     return checkFksOnWrite(table, candidate, err);
 }
 
-void DataModel::assignAutonumberIfNeeded(const QString& table, const Schema& s, Record& r) const {
-    const int pk = pkColumn(s);
-    if (pk >= 0 && normType(s[pk].type) == "autonumeracion") {
+void DataModel::assignAutonumberIfNeeded(const QString& table, const Schema& s, Record& r) {
+    const int ac = autoColumn(s);                   // ← en vez de pkColumn(s)
+    if (ac >= 0) {
         r.resize(std::max(r.size(), s.size()));
-        if (isEmptyVar(r[pk])) {
-            r[pk] = nextAutoNumber(table);
+        if (isEmptyVar(r[ac])) {
+            r[ac] = nextAutoNumber(table);          // ← se autollenará igual
         }
     }
 }
 
-QVariant DataModel::nextAutoNumber(const QString& name) const {
-    const Schema sch = m_schemas.value(name);
-    const int pk = pkColumn(sch);
-    if (pk < 0) return 1;
 
-    const FieldDef& fd = sch[pk];
+
+void DataModel::ensureAutoCounterInitialized(const QString& table)
+{
+    if (m_lastIssuedId.contains(table)) return;
+
+    const auto& rows = this->rows(table);
+    const Schema sch = this->schema(table);
+
+    // localizar columna de Autonumeración (aunque no sea PK)
+    const int ac = autoColumn(sch);
+    if (ac < 0) {                      // no hay autonum en esta tabla
+        m_lastIssuedId.insert(table, 0);
+        return;
+    }
+
+    qint64 maxId = 0;
+    for (const Record& rec : rows) {
+        if (rec.isEmpty() || ac >= rec.size()) continue;
+        bool ok = false;
+        const qint64 v = rec[ac].toLongLong(&ok);
+        if (ok && v > maxId) maxId = v;
+    }
+    m_lastIssuedId.insert(table, maxId);   // arranca en el máximo existente
+}
+
+
+
+
+QVariant DataModel::nextAutoNumber(const QString& name)
+{
+    const Schema sch = m_schemas.value(name);
+
+    // ← localizar la columna AUTONUM (aunque no sea PK)
+    const int ac = autoColumn(sch);
+    if (ac < 0) return static_cast<qint64>(1);
+
+    const FieldDef& fd = sch[ac];
     auto it = m_data.constFind(name);
 
-    // Si el subtipo es Replication ID -> devolver GUID (string)
+    // 1) Replication ID -> GUID
     if (normType(fd.type) == "autonumeracion" &&
         fd.autoSubtipo.trimmed().toLower().startsWith("replication"))
     {
         return QUuid::createUuid().toString(QUuid::WithoutBraces);
     }
 
-    // Sin filas aún
-    if (it == m_data.constEnd() || it->isEmpty()) {
-        if (fd.autoNewValues.toLower().startsWith("random")) {
+    // 2) Random entero único
+    if (fd.autoNewValues.toLower().startsWith("random")) {
+        if (it == m_data.constEnd() || it->isEmpty()) {
             return static_cast<qint64>(QRandomGenerator::global()->bounded(1, INT_MAX));
         }
-        return static_cast<qint64>(1);
-    }
-
-    // Random entero único (omite tombstones)
-    if (fd.autoNewValues.toLower().startsWith("random")) {
         while (true) {
-            qint64 v = static_cast<qint64>(QRandomGenerator::global()->bounded(1, INT_MAX));
+            const qint64 v = static_cast<qint64>(QRandomGenerator::global()->bounded(1, INT_MAX));
             bool clash = false;
             for (const auto& rec : it.value()) {
-                if (rec.isEmpty()) continue; // ⟵ omitir tombstones
-                if (rec.value(pk).toLongLong() == v) { clash = true; break; }
+                if (rec.isEmpty()) continue;                 // omite tombstones
+                if (ac < rec.size() && rec.value(ac).toLongLong() == v) { clash = true; break; }
             }
             if (!clash) return v;
         }
     }
 
-    // Incremental: max + 1 (omite tombstones)
-    qlonglong mx = 0;
-    for (const auto& r : it.value()) {
-        if (r.isEmpty()) continue; // ⟵ omitir tombstones
-        bool ok = false;
-        qlonglong v = r.value(pk).toLongLong(&ok);
-        if (ok) mx = std::max(mx, v);
-    }
-    return mx + 1;
+    // 3) Incremental MONÓTONO: último emitido + 1
+    ensureAutoCounterInitialized(name);                      // ya usa autoColumn internamente
+    return QVariant(m_lastIssuedId.value(name, 0) + 1);
 }
 
+
+
+
 bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) const {
+
+    const QString t = normType(col.type);
     if (isEmptyVar(v)) {
-        // si es requerido (y no PK), no puede estar vacío
+        // Autonumeración: permitir vacío (lo llenará assignAutonumberIfNeeded / nextAutoNumber)
+        if (t == "autonumeracion") {
+            v = QVariant();
+            return true;
+        }
+        // Para los demás tipos: si es requerido (y no PK), no puede estar vacío
         if (col.requerido && !col.pk) {
             if (err) *err = tr("El campo \"%1\" es requerido.").arg(col.name);
             return false;
         }
-        v = QVariant(); // null aceptado
+        v = QVariant(); // null aceptado cuando no es requerido
         return true;
     }
 
-    const QString t = normType(col.type);
 
     if (t == "autonumeracion") {
         // Validación depende del subtipo
@@ -387,25 +425,42 @@ bool DataModel::createTable(const QString& name, const Schema& s, QString* err) 
     if (m_schemas.contains(name)) { if (err) *err = tr("La tabla ya existe: %1").arg(name); return false; }
 
     // Aceptar esquema vacío al crear; el usuario lo diseñará luego.
-    if (!s.isEmpty()) {
-        QSet<QString> names; int pkCount = 0;
-        for (const auto& c : s) {
+    Schema s2 = s;  // ← trabajamos sobre una copia editable para poder forzar 'requerido'
+    if (!s2.isEmpty()) {
+        QSet<QString> names;
+        int pkCount   = 0;
+        int autoCount = 0;
+        int autoIdx   = -1;
+
+        for (int i = 0; i < s2.size(); ++i) {
+            const auto& c = s2[i];
             if (c.name.trimmed().isEmpty()) { if (err) *err = tr("Columna sin nombre."); return false; }
             if (names.contains(c.name))      { if (err) *err = tr("Columna duplicada: %1").arg(c.name); return false; }
             names.insert(c.name);
+
             if (c.pk) ++pkCount;
+            if (normType(c.type) == "autonumeracion") {
+                ++autoCount;
+                autoIdx = i;
+            }
         }
-        if (pkCount > 1) { if (err) *err = tr("Solo se permite una PK."); return false; }
+
+        if (pkCount > 1)    { if (err) *err = tr("Solo se permite una PK."); return false; }
+        if (autoCount > 1)  { if (err) *err = tr("Solo se permite un campo de Autonumeración por tabla."); return false; }
+        if (autoIdx >= 0) {
+            s2[autoIdx].requerido = true; // ← Autonumeración SIEMPRE requerido
+        }
     }
 
-    m_schemas.insert(name, s);
+    m_schemas.insert(name, s2);
     m_data.insert(name, {});
     m_tableDescriptions.insert(name, QString());
     m_freeList.insert(name, {}); // ⟵ preparar avail list
     emit tableCreated(name);
-    emit schemaChanged(name, s);
+    emit schemaChanged(name, s2);
     return true;
 }
+
 
 bool DataModel::dropTable(const QString& name, QString* err) {
     if (!m_schemas.contains(name)) { if (err) *err = tr("No existe la tabla: %1").arg(name); return false; }
@@ -432,40 +487,63 @@ bool DataModel::renameTable(const QString& oldName, const QString& newName, QStr
     return true;
 }
 
+void DataModel::markColumnEdited(const QString& table, const QString& colName)
+{
+    // Solo marca si esa columna salió antes de Autonumeración (hay baseline guardado)
+    if (m_autoBaseline.contains(table) && m_autoBaseline[table].contains(colName)) {
+        m_autoEditedSinceLeave[table].insert(colName);
+    }
+}
+
+
+
 bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
     if (!m_schemas.contains(name)) { if (err) *err = tr("No existe la tabla: %1").arg(name); return false; }
 
-    // Re-validación básica
-    QSet<QString> names;
-    int pkCount = 0;
-    for (const auto& c : s) {
-        if (c.name.trimmed().isEmpty()) { if (err) *err = tr("Columna sin nombre."); return false; }
-        if (names.contains(c.name))      { if (err) *err = tr("Columna duplicada: %1").arg(c.name); return false; }
-        names.insert(c.name);
-        if (c.pk) ++pkCount;
-    }
-    if (pkCount > 1) { if (err) *err = tr("Solo se permite una PK."); return false; }
+    // --- VALIDACIÓN: duplicados, PK única, y SOLO 1 Autonumeración (si hay, forzar requerido=true)
+    Schema s2 = s; // copia editable
+    {
+        QSet<QString> names;
+        int pkCount   = 0;
+        int autoCount = 0;
+        int autoIdx   = -1;
 
-    // Migración sencilla por nombre
+        for (int i = 0; i < s2.size(); ++i) {
+            const auto& c = s2[i];
+            if (c.name.trimmed().isEmpty()) { if (err) *err = tr("Columna sin nombre."); return false; }
+            if (names.contains(c.name))      { if (err) *err = tr("Columna duplicada: %1").arg(c.name); return false; }
+            names.insert(c.name);
+
+            if (c.pk) ++pkCount;
+            if (normType(c.type) == "autonumeracion") { ++autoCount; autoIdx = i; }
+        }
+        if (pkCount > 1)   { if (err) *err = tr("Solo se permite una PK."); return false; }
+        if (autoCount > 1) { if (err) *err = tr("Solo se permite un campo de Autonumeración por tabla."); return false; }
+        if (autoIdx >= 0) {
+            s2[autoIdx].requerido = true; // Autonumeración SIEMPRE requerido
+        }
+    }
+
+    // Migración sencilla por nombre + soporte a rename, usando s2 (no s)
     const Schema oldS  = m_schemas.value(name);
     const auto   oldRs = m_data.value(name);
 
     QHash<QString,int> oldIndex;
     for (int i = 0; i < oldS.size(); ++i) oldIndex.insert(oldS[i].name, i);
 
-    // --- NUEVO: mapa robusto de columnas nuevas -> viejas (con soporte a rename)
-    QVector<int> mapNewToOld(s.size(), -1);
+    // --- mapa robusto de columnas nuevas -> viejas (con soporte a rename)
+    QVector<int>  mapNewToOld(s2.size(), -1);
     QVector<bool> oldUsed(oldS.size(), false);
 
-    // 1) Primero, emparejar por nombre (lo ya existente)
-    for (int i = 0; i < s.size(); ++i) {
-        int oi = oldIndex.value(s[i].name, -1);
+    // 1) Emparejar por nombre
+    for (int i = 0; i < s2.size(); ++i) {
+        int oi = oldIndex.value(s2[i].name, -1);
         if (oi >= 0) { mapNewToOld[i] = oi; oldUsed[oi] = true; }
     }
 
-    // 2) Detectar columnas "nuevas" (renombradas realmente) y "viejas" sin usar
+    // 2) Detectar "nuevas" (renombradas realmente) y "viejas" sin usar
     QVector<int> newMissing, oldMissing;
-    for (int i = 0; i < s.size(); ++i) if (mapNewToOld[i] < 0) newMissing.append(i);
+    for (int i = 0; i < s2.size(); ++i) if (mapNewToOld[i] < 0) newMissing.append(i);
     for (int oi = 0; oi < oldS.size(); ++oi) if (!oldUsed[oi]) oldMissing.append(oi);
 
     // 3) Si la cuenta coincide, asumimos RENAME(s). Emparejar por tipo/PK, con fallback por orden
@@ -481,12 +559,12 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
         for (int ni : newMissing) {
             int chosen = -1;
 
-            // a) intento por tipo/PK
+            // a) por tipo/PK
             for (int oi : oldMissing) {
                 if (taken.contains(oi)) continue;
-                if (typeKey(s[ni]) == typeKey(oldS[oi])) { chosen = oi; break; }
+                if (typeKey(s2[ni]) == typeKey(oldS[oi])) { chosen = oi; break; }
             }
-            // b) fallback: el primero libre (por posición relativa)
+            // b) fallback: primero libre
             if (chosen == -1) {
                 for (int oi : oldMissing) { if (!taken.contains(oi)) { chosen = oi; break; } }
             }
@@ -504,9 +582,9 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
 
     for (const auto& r : oldRs) {
         if (r.isEmpty()) { newRows.append(Record{}); continue; } // conservar tombstones
-        Record nr(s.size());
-        for (int i = 0; i < s.size(); ++i) {
-            const FieldDef& col = s[i];
+        Record nr(s2.size());
+        for (int i = 0; i < s2.size(); ++i) {
+            const FieldDef& col = s2[i];
             const int oi = mapNewToOld[i];
             QVariant v = (oi >= 0 && oi < r.size()) ? r[oi] : QVariant();
 
@@ -519,7 +597,137 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
         newRows.append(nr);
     }
 
-    m_schemas[name] = s;
+    // ===== Reglas de PK: no bool, sin NULL/vacíos, sin duplicados =====
+    // (validamos contra s2 + newRows ya normalizados)
+    int pkCol = -1;
+    for (int i = 0; i < s2.size(); ++i) {
+        if (s2[i].pk) { pkCol = i; break; }
+    }
+    if (pkCol >= 0) {
+        // Forzar requerido en PK
+        s2[pkCol].requerido = true;
+
+        const QString ntype = normType(s2[pkCol].type);
+        const bool textPk   = (ntype == "texto" || ntype == "texto_largo");
+
+        // 0) Tipo prohibido: booleano jamás puede ser PK
+        if (ntype == "booleano") {
+            if (err) *err = tr("El tipo Sí/No (Booleano) no puede ser llave primaria.");
+            return false;
+        }
+
+        // 1) Vacíos/NULLs no permitidos en datos existentes
+        for (const Record& rec : newRows) {
+            if (rec.isEmpty()) continue;                  // tombstone
+            if (pkCol >= rec.size()) continue;
+            const QVariant& v = rec[pkCol];
+            const bool isEmpty =
+                !v.isValid() || v.isNull()
+#if QT_VERSION >= QT_VERSION_CHECK(6,0,0)
+                || (v.typeId() == QMetaType::QString && v.toString().trimmed().isEmpty());
+#else
+                || (v.type() == QVariant::String && v.toString().trimmed().isEmpty());
+#endif
+            if (isEmpty) {
+                if (err) *err = tr("La columna \"%1\" contiene valores vacíos. No puede ser llave primaria.")
+                               .arg(s2[pkCol].name);
+                return false;
+            }
+        }
+
+        // 2) Duplicados no permitidos (texto: case-insensitive)
+        QSet<QString> seen;
+        auto keyFor = [&](const QVariant& v)->QString {
+            // ya filtramos vacíos; aquí solo normalizamos la clave
+            if (textPk) return v.toString().trimmed().toLower();  // sin distinguir mayúsc/minúsc
+            return v.toString();
+        };
+
+        for (const Record& rec : newRows) {
+            if (rec.isEmpty() || pkCol >= rec.size()) continue;
+            const QString k = keyFor(rec[pkCol]);
+            if (seen.contains(k)) {
+                if (textPk) {
+                    if (err) *err = tr("La columna \"%1\" tiene valores duplicados (sin distinguir mayús/minús). "
+                                  "No puede ser llave primaria.").arg(s2[pkCol].name);
+                } else {
+                    if (err) *err = tr("La columna \"%1\" tiene valores duplicados. No puede ser llave primaria.")
+                                   .arg(s2[pkCol].name);
+                }
+                return false;
+            }
+            seen.insert(k);
+        }
+    }
+
+    // A) Si una columna deja de ser Autonumeración, guardar baseline y limpiar flag de "editada"
+    {
+        auto& tblBaseline = m_autoBaseline[name]; // crea entrada si no existe
+        for (int newCol = 0; newCol < s2.size(); ++newCol) {
+            const int oldCol = mapNewToOld.value(newCol, -1);
+            if (oldCol < 0) continue; // columna nueva: no aplica
+
+            const bool wasAuto = (normType(oldS[oldCol].type) == "autonumeracion");
+            const bool toAuto  = (normType(s2[newCol].type)   == "autonumeracion");
+
+            if (wasAuto && !toAuto) {
+                QVector<QVariant> snap;
+                snap.reserve(oldRs.size());
+                for (const Record& rec : oldRs) {
+                    snap.push_back(oldCol < rec.size() ? rec[oldCol] : QVariant());
+                }
+                const QString colNameNow = s2[newCol].name; // nombre actual
+                tblBaseline[colNameNow] = std::move(snap);
+                m_autoEditedSinceLeave[name].remove(colNameNow); // aún no ha sido editada
+            }
+        }
+    }
+
+
+    // B) Regla: si la columna fue editada DESPUÉS de salir de Autonumeración, no puede volver a Autonumeración
+    for (int newCol = 0; newCol < s2.size(); ++newCol) {
+        const bool toAuto = (normType(s2[newCol].type) == "autonumeracion");
+        if (!toAuto) continue;
+
+        const int oldCol   = mapNewToOld.value(newCol, -1);
+        const bool wasAuto = (oldCol >= 0 && normType(oldS[oldCol].type) == "autonumeracion");
+        if (wasAuto) continue; // seguía siendo autonum; no es "volver"
+
+        const QString colNameNow = s2[newCol].name;
+
+        // 1) Si está marcada como editada tras salir → veto directo
+        if (m_autoEditedSinceLeave[name].contains(colNameNow)) {
+            if (err) *err = tr("No puede volver a \"Autonumeración\": la columna fue editada después de salir de Autonumeración.");
+            return false;
+        }
+
+        // 2) (respaldo) Si hay baseline y el contenido actual difiere del baseline → veto
+        if (m_autoBaseline.contains(name) && m_autoBaseline[name].contains(colNameNow)) {
+            const QVector<QVariant>& snap = m_autoBaseline[name][colNameNow];
+            bool differs = false;
+
+            const QVector<Record>& rows = m_data.value(name);
+            const int N = std::max(snap.size(), rows.size());
+            for (int r = 0; r < N; ++r) {
+                QVariant cur;
+                if (r < rows.size()) {
+                    const Record& rec = rows[r];
+                    if (newCol < rec.size()) cur = rec[newCol];
+                }
+                const QVariant base = (r < snap.size() ? snap[r] : QVariant());
+                if (!sameValue(cur, base)) { differs = true; break; }
+            }
+            if (differs) {
+                if (err) *err = tr("No puede volver a \"Autonumeración\": la columna fue editada después de salir de Autonumeración.");
+                return false;
+            }
+        }
+    }
+
+
+
+    // Sustituir esquema y datos (usar s2, no s)
+    m_schemas[name] = s2;
     m_data[name]    = newRows;
 
     // Recalcular free list (tombstones) tras cambio de esquema
@@ -527,9 +735,16 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
     for (int i = 0; i < m_data[name].size(); ++i)
         if (m_data[name][i].isEmpty()) m_freeList[name].push_back(i);
 
-    emit schemaChanged(name, s);
+    // Recalcular contador SÓLO si cambió cuál columna es Autonumeración
+    const int oldAuto = autoColumn(oldS);   // ← usa el esquema anterior (ya lo tienes arriba)
+    const int newAuto = autoColumn(s2);     // ← usa el esquema nuevo que estás guardando
+    if (oldAuto != newAuto) {
+        m_lastIssuedId.remove(name);        // se recalculará con ensureAutoCounterInitialized
+    }
+    emit schemaChanged(name, s2);
     return true;
 }
+
 
 /* ====================== Datos ====================== */
 
@@ -573,6 +788,7 @@ bool DataModel::insertRow(const QString& name, Record r, QString* err) {
 
     // === Avail List: reutiliza huecos antes de hacer append ===
     auto& vec  = m_data[name];
+
     auto& free = m_freeList[name];
 
     if (!free.isEmpty()) {
@@ -586,6 +802,21 @@ bool DataModel::insertRow(const QString& name, Record r, QString* err) {
     } else {
         vec.push_back(r);
     }
+
+    // ← AVANZAR contador monótono si la tabla tiene columna de Autonumeración (sea o no PK)
+    {
+        const int ac = autoColumn(s);            // <-- en vez de pkColumn(s)
+        if (ac >= 0) {
+            ensureAutoCounterInitialized(name);  // ya usa autoColumn internamente
+            bool ok = false;
+            const qint64 v = (ac < r.size() ? r[ac].toLongLong(&ok) : 0);
+            if (ok && v > m_lastIssuedId.value(name, 0)) {
+                m_lastIssuedId[name] = v;
+            }
+        }
+    }
+
+
 
     emit rowsChanged(name);
     return true;
@@ -1157,6 +1388,8 @@ bool DataModel::loadFromJson(const QString& path, QString* err) {
         QString dummy;
         addRelationship(ctab, ccol, ptab, pcol, del, upd, &dummy); // reconstituye
     }
+
+    m_lastIssuedId.clear();
 
     return true;
 }
