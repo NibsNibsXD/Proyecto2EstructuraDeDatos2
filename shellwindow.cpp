@@ -50,6 +50,7 @@
 #include <functional>
 #include <QGraphicsSceneHoverEvent>
 #include <QGraphicsSceneMouseEvent>
+#include <QToolTip>
 
 
 
@@ -1520,15 +1521,46 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     }
     if (btnDatasheet) connect(btnDatasheet, &QToolButton::clicked, this, [=]{
             auto *it = list->currentItem();
-            if (it) {
-                const QString t = it->text();
-                recordsPage->setTableFromFieldDefs(t, tablesPage->schemaFor(t));
+            if (!it) return;
+
+            const QString t = it->text();
+            const Schema s  = DataModel::instance().schema(t);
+
+            bool hasPk = false;
+            for (const auto& f : s) { if (f.pk) { hasPk = true; break; } }
+
+            if (!hasPk) {
+                QMessageBox::warning(this,
+                                     tr("Clave primaria requerida"),
+                                     tr("Seleccione una llave primaria (PK) para continuar al Datasheet."));
+                return; // ← ÚNICO lugar donde mostramos el mensaje
             }
+
+            recordsPage->setTableFromFieldDefs(t, s);
             stack->setCurrentWidget(recordsPage);
         });
+
     if (btnDesign) connect(btnDesign, &QToolButton::clicked, this, [=]{
+            // Bloqueo: no salir del Datasheet si hay requeridos vacíos
+            if (stack->currentWidget() == recordsPage) {
+                QModelIndex idx;
+                if (recordsPage->hasUnfilledRequired(&idx)) {
+                    auto *sheet = recordsPage->sheet(); // o findChild<QTableWidget*>("twRegistros")
+                    sheet->setCurrentCell(idx.row(), idx.column());
+                    QToolTip::showText(
+                        sheet->viewport()->mapToGlobal(
+                            sheet->visualItemRect(sheet->item(idx.row(), idx.column())).bottomRight()),
+                        tr("Complete el campo requerido para continuar."),
+                        sheet
+                        );
+                    return; // ← NO cambiamos a Design
+                }
+            }
+
+            // OK: cambiar a Design
             stack->setCurrentWidget(tablesPage);
         });
+
 
     // Deshabilitar el botón de la vista actual y habilitar el otro
     auto updateViewsUi = [=]{

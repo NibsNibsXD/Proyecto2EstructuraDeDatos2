@@ -18,10 +18,79 @@
 #include <QKeyEvent>
 #include <QIntValidator>
 #include <QScrollBar>
+#include <QStandardItemModel>
+#include <QStandardItem>
 
 
 
 /* ===== Helpers ===== */
+
+// ¿Existe ya una fila con Autonumeración? Devuelve su índice o -1.
+int TablesPage::autonumRow() const {
+    for (int r = 0; r < m_currentSchema.size(); ++r) {
+        if (normType(m_currentSchema[r].type) == "autonumeracion")
+            return r;
+    }
+    return -1;
+}
+
+// Devuelve el QComboBox de tipo de una fila (columna 1)
+QComboBox* TablesPage::typeComboAt(int row) const {
+    return qobject_cast<QComboBox*>(fieldsTable->cellWidget(row, 1));
+}
+
+// Encuentra el índice del item "Autonumeración" dentro de un combo
+int TablesPage::indexOfAutonum(QComboBox* cb) const {
+    if (!cb) return -1;
+    for (int i = 0; i < cb->count(); ++i) {
+        if (normType(cb->itemText(i)) == "autonumeracion") return i;
+    }
+    return -1;
+}
+
+void TablesPage::refreshAutonumLocks() {
+    // 1) Lee el esquema “live” del modelo (fuente de verdad)
+    const Schema live = DataModel::instance().schema(m_currentTable);
+
+    int autoR = -1;
+    for (int r = 0; r < live.size(); ++r) {
+        if (normType(live[r].type) == "autonumeracion") { autoR = r; break; }
+    }
+
+    for (int r = 0; r < fieldsTable->rowCount(); ++r) {
+        if (QComboBox* cb = typeComboAt(r)) {
+            const int iAuto = indexOfAutonum(cb);
+            if (iAuto < 0) continue;
+
+            // Trabaja sobre el modelo real del combo
+            if (auto *sm = qobject_cast<QStandardItemModel*>(cb->model())) {
+                const QModelIndex mi = sm->index(iAuto, cb->modelColumn(), cb->rootModelIndex());
+                if (!mi.isValid()) continue;
+                if (QStandardItem *it = sm->itemFromIndex(mi)) {
+                    // Habilita por defecto
+                    it->setFlags(it->flags() | Qt::ItemIsEnabled);
+                    it->setToolTip(QString());
+
+                    // Si existe una autonum en OTRA fila, deshabilita aquí
+                    if (autoR >= 0 && r != autoR) {
+                        it->setFlags(it->flags() & ~Qt::ItemIsEnabled);
+                        it->setToolTip(tr("Solo un campo Autonumeración por tabla."));
+                    }
+                }
+            } else {
+                // Fallback por si algún día cambias el modelo del combo:
+                // truco con data roles para algunos estilos (no 100% confiable)
+                cb->model()->setData(cb->model()->index(iAuto, 0), 1, Qt::UserRole - 1);
+                cb->setItemData(iAuto, QVariant(), Qt::ToolTipRole);
+                if (autoR >= 0 && r != autoR) {
+                    cb->model()->setData(cb->model()->index(iAuto, 0), 0, Qt::UserRole - 1);
+                    cb->setItemData(iAuto, tr("Solo un campo Autonumeración por tabla."), Qt::ToolTipRole);
+                }
+            }
+        }
+    }
+}
+
 
 // -- Helper UI: configura el combo de decimales según si es entero o no
 // Ajusta el combo "Decimal places" según si el tamaño es entero o decimal.
@@ -438,6 +507,8 @@ void TablesPage::loadTableToUi(const QString &tableName) {
         clearPropsUi();
     }
 
+    refreshAutonumLocks();
+
 }
 
 void TablesPage::buildRowFromField(int row, const FieldDef &fd) {
@@ -453,15 +524,36 @@ void TablesPage::buildRowFromField(int row, const FieldDef &fd) {
     fieldsTable->setCellWidget(row, 1, typeCb);
 
     // PK (checkbox centrado)
-    auto *pkChk = new QCheckBox(fieldsTable);
-    pkChk->setChecked(fd.pk);
-    pkChk->setStyleSheet("margin-left:12px;");
-    QWidget *wrap = new QWidget(fieldsTable);
-    QHBoxLayout *hl = new QHBoxLayout(wrap);
+    auto *pk = new QCheckBox(fieldsTable);
+    pk->setChecked(fd.pk);
+    auto *wrap = new QWidget(fieldsTable);
+    auto *hl   = new QHBoxLayout(wrap);
     hl->setContentsMargins(0,0,0,0);
-    hl->addWidget(pkChk);
+    hl->addStretch();
+    hl->addWidget(pk);
     hl->addStretch();
     fieldsTable->setCellWidget(row, 2, wrap);
+
+    // ⬇️ ENLACE para hacer cumplir “solo 1 PK”
+    connect(pk, &QCheckBox::toggled, this, [=](bool on){
+        if (m_updatingUi) return;
+        Schema s = m_currentSchema;
+        s[row].pk = on;
+        if (on) s[row].requerido = true;
+
+        QString err;
+        if (!DataModel::instance().setSchema(m_currentTable, s, &err)) {
+            QSignalBlocker b(pk);
+            pk->setChecked(!on);
+            if (on) { // ← solo avisar cuando intentan AGREGAR una PK extra
+                QMessageBox::warning(this, tr("Clave primaria"), err);
+            }
+            return;
+        }
+
+        applySchemaAndRefresh(s, row);
+    });
+
 }
 
 bool TablesPage::applySchemaAndRefresh(const Schema& s, int preserveRow)
@@ -502,6 +594,8 @@ bool TablesPage::applySchemaAndRefresh(const Schema& s, int preserveRow)
         clearPropsUi();
     }
 
+    refreshAutonumLocks();
+
     emit schemaChanged(m_currentTable, m_currentSchema);
     return true;
 }
@@ -534,24 +628,22 @@ void TablesPage::connectRowEditors(int row) {
                 }
             }
             // Cambia el tipo
+            const QString oldText = s[row].type;
             s[row].type = t;
 
             // Refresca panel General y aplica schema
             updateGeneralUiForType(t);
-            applySchemaAndRefresh(s, row);
-        });
-    }
+            if (!applySchemaAndRefresh(s, row)) {
+                // ⬅️ Si el modelo lo rechazó, REVERSA el combo y el panel
+                QSignalBlocker block(typeCb);
+                typeCb->setCurrentText(oldText);                          // ← vuelve a lo anterior
+                updateGeneralUiForType(oldText);
+                refreshAutonumLocks();
+                return;
+            }
+            refreshAutonumLocks();
 
-    // ----- PK (columna 2) -----
-    if (auto *wrap = fieldsTable->cellWidget(row, 2)) {
-        if (auto *pkChk = wrap->findChild<QCheckBox*>()) {
-            QObject::connect(pkChk, &QCheckBox::toggled, this, [=](bool on){
-                if (row < 0 || row >= m_currentSchema.size()) return;
-                Schema s = m_currentSchema;
-                s[row].pk = on;
-                applySchemaAndRefresh(s, row);
-            });
-        }
+        });
     }
 }
 
@@ -608,6 +700,7 @@ void TablesPage::onSelectTable() {
     loadTableToUi(name);
     emit tableSelected(name);
 }
+
 
 void TablesPage::onFieldSelectionChanged() {
     if (m_updatingUi) return;
@@ -771,21 +864,50 @@ void TablesPage::onPropertyChanged() {
     else if (src == propAutoFormato)     who = Src::AutoFormato;
     else if (src == propTextSize)        who = Src::TextSize;
 
-    // Construye nuevo schema desde la UI
+    // --- Construye un schema "candidato" desde la UI (sin comprometer aún el modelo) ---
     Schema s = m_currentSchema;
-    pullPropsFromUi(s[row]);
+    pullPropsFromUi(s[row]);  // esto actualiza s[row] con lo que se ve en la UI
 
-    const QString nt = normType(m_currentSchema[row].type);
-    if (who == Src::DecPlaces && nt == "moneda") {
-        // Actualiza solo el FieldDef en modelo (sin reconstruir toda la UI)
+    // --- Regla Autonumeración: solo 1 por tabla y siempre requerido ---
+    if (who == Src::Formato) {
+        const QString newNorm = normType(propFormato->currentText());
+        if (newNorm == "autonumeracion") {
+            // ¿ya existe otro autonum en esta tabla (excluyendo la fila actual)?
+            int already = -1;
+            for (int i = 0; i < m_currentSchema.size(); ++i) {
+                if (i == row) continue;
+                if (normType(m_currentSchema[i].type) == "autonumeracion") { already = i; break; }
+            }
+            if (already >= 0) {
+                QMessageBox::warning(this, tr("Autonumeración"),
+                                     tr("Solo se permite un campo de Autonumeración por tabla."));
+                // Revertir visualmente el combo y el panel de propiedades al tipo anterior
+                {
+                    QSignalBlocker bFmt(propFormato);
+                    if (propFormato) propFormato->setCurrentText(m_currentSchema[row].type);
+                }
+                updateGeneralUiForType(m_currentSchema[row].type);
+                if (propFormato) propFormato->setFocus();
+                refreshAutonumLocks();
+                return; // aborta el cambio de tipo
+            }
+        }
+    }
+
+    // Si el candidato quedó como autonumeración, forzar requerido = true
+    if (normType(s[row].type) == "autonumeracion") {
+        s[row].requerido = true;
+    }
+
+    // Casito especial previo (ya lo tenías): si solo cambian decimales en moneda, evita repoblar todo
+    const QString ntPrev = normType(m_currentSchema[row].type);
+    if (who == Src::DecPlaces && ntPrev == "moneda") {
         DataModel::instance().setSchema(m_currentTable, s, nullptr);
-        // Refleja el dp en el control sin repoblar todo
         const QString savedFmt = s[row].formato;
         const int dp = parseDecPlaces(savedFmt);
         propDecimalPlaces->blockSignals(true);
         propDecimalPlaces->setCurrentText(QString::number(dp));
         propDecimalPlaces->blockSignals(false);
-        // Mantén el foco donde estaba
         if (propDecimalPlaces) propDecimalPlaces->setFocus();
         return;
     }
@@ -799,8 +921,35 @@ void TablesPage::onPropertyChanged() {
     QSignalBlocker b2(propDecimalPlaces);
     QSignalBlocker b3(propAutoFormato);
 
-    // Refresca sin reentrar
-    applySchemaAndRefresh(s, row);
+    // Si el tipo NUEVO es fecha, asegúrate de dejar un formato de fecha válido
+    if (normType(s[row].type) == "fecha_hora") {
+        s[row].formato = baseFormatKey(s[row].formato);      // quita "|dp=.."
+        if (s[row].formato.trimmed().isEmpty() ||
+            s[row].formato.contains("dp="))                   // por si acaso
+        {
+            s[row].formato = QStringLiteral("dd/MM/yy");
+        }
+    }
+
+    // Si el tipo NUEVO ya no es número/moneda, elimina el "|dp=.."
+    if (normType(s[row].type) != "numero" && normType(s[row].type) != "moneda") {
+        s[row].formato = baseFormatKey(s[row].formato);
+    }
+
+
+    // Aplica el schema candidato y refresca la UI
+    if (!applySchemaAndRefresh(s, row)) {
+        // ← El modelo lo rechazó: REVERSA solo si el disparador fue el Formato
+        if (who == Src::Formato && propFormato) {
+            QSignalBlocker bFmt(propFormato);
+            propFormato->setCurrentText(m_currentSchema[row].type);
+            updateGeneralUiForType(m_currentSchema[row].type);
+        }
+        refreshAutonumLocks();
+        return;
+    }
+    refreshAutonumLocks();
+
 
     // Restaura el foco al control que originó el cambio
     switch (who) {
@@ -979,16 +1128,14 @@ void TablesPage::updateGeneralUiForType(const QString& type)
         propAutoNewValues->setFocusPolicy(Qt::NoFocus);
         propAutoNewValues->blockSignals(false);
 
-        // ---- REQUERIDO: visible siempre; si es PK => marcado y bloqueado ----
+        // ---- REQUERIDO: Autonumeración SIEMPRE requerido y bloqueado ----
         setRowVisible(fl, propRequerido, true);
-
-        bool req = isPk ? true
-                        : ((row >= 0 && row < m_currentSchema.size()) ? m_currentSchema[row].requerido : false);
-
-        QSignalBlocker bReq(propRequerido);   // evita onPropertyChanged durante el set
-        propRequerido->setChecked(req);
-        propRequerido->setEnabled(!isPk);
-
+        if (propRequerido) {
+            QSignalBlocker bReq(propRequerido);
+            propRequerido->setChecked(true);
+            propRequerido->setEnabled(false);
+            propRequerido->setToolTip(tr("Los campos Autonumeración siempre son Requeridos."));
+        }
 
 
         // nada de valor predeterminado / field size
