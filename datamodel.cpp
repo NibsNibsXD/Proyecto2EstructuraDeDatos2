@@ -30,7 +30,6 @@ int DataModel::autoColumn(const Schema& s) const {
     return -1;
 }
 
-
 DataModel::DataModel(QObject* parent) : QObject(parent) {}
 
 /* ====================== Helpers (libres) ====================== */
@@ -176,8 +175,6 @@ void DataModel::assignAutonumberIfNeeded(const QString& table, const Schema& s, 
     }
 }
 
-
-
 void DataModel::ensureAutoCounterInitialized(const QString& table)
 {
     if (m_lastIssuedId.contains(table)) return;
@@ -201,9 +198,6 @@ void DataModel::ensureAutoCounterInitialized(const QString& table)
     }
     m_lastIssuedId.insert(table, maxId);   // arranca en el máximo existente
 }
-
-
-
 
 QVariant DataModel::nextAutoNumber(const QString& name)
 {
@@ -244,9 +238,6 @@ QVariant DataModel::nextAutoNumber(const QString& name)
     return QVariant(m_lastIssuedId.value(name, 0) + 1);
 }
 
-
-
-
 bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) const {
 
     const QString t = normType(col.type);
@@ -264,7 +255,6 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
         v = QVariant(); // null aceptado cuando no es requerido
         return true;
     }
-
 
     if (t == "autonumeracion") {
         // Validación depende del subtipo
@@ -290,7 +280,7 @@ bool DataModel::normalizeValue(const FieldDef& col, QVariant& v, QString* err) c
             bool okD = false;
             const double d = v.toDouble(&okD);
             if (!okD) { if (err) *err = tr("El campo \"%1\" debe ser entero/numérico.").arg(col.name); return false; }
-            v = static_cast<qint64>(std::llround(d));   // usa std::floor(d) si prefieres truncar
+            v = static_cast<qint64>(std::llround(d));
             return true;
         } else {
             bool ok = false;
@@ -461,7 +451,6 @@ bool DataModel::createTable(const QString& name, const Schema& s, QString* err) 
     return true;
 }
 
-
 bool DataModel::dropTable(const QString& name, QString* err) {
     if (!m_schemas.contains(name)) { if (err) *err = tr("No existe la tabla: %1").arg(name); return false; }
     m_schemas.remove(name);
@@ -494,8 +483,6 @@ void DataModel::markColumnEdited(const QString& table, const QString& colName)
         m_autoEditedSinceLeave[table].insert(colName);
     }
 }
-
-
 
 bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
     if (!m_schemas.contains(name)) { if (err) *err = tr("No existe la tabla: %1").arg(name); return false; }
@@ -683,7 +670,6 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
         }
     }
 
-
     // B) Regla: si la columna fue editada DESPUÉS de salir de Autonumeración, no puede volver a Autonumeración
     for (int newCol = 0; newCol < s2.size(); ++newCol) {
         const bool toAuto = (normType(s2[newCol].type) == "autonumeracion");
@@ -724,8 +710,6 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
         }
     }
 
-
-
     // Sustituir esquema y datos (usar s2, no s)
     m_schemas[name] = s2;
     m_data[name]    = newRows;
@@ -736,15 +720,14 @@ bool DataModel::setSchema(const QString& name, const Schema& s, QString* err) {
         if (m_data[name][i].isEmpty()) m_freeList[name].push_back(i);
 
     // Recalcular contador SÓLO si cambió cuál columna es Autonumeración
-    const int oldAuto = autoColumn(oldS);   // ← usa el esquema anterior (ya lo tienes arriba)
-    const int newAuto = autoColumn(s2);     // ← usa el esquema nuevo que estás guardando
+    const int oldAuto = autoColumn(oldS);
+    const int newAuto = autoColumn(s2);
     if (oldAuto != newAuto) {
         m_lastIssuedId.remove(name);        // se recalculará con ensureAutoCounterInitialized
     }
     emit schemaChanged(name, s2);
     return true;
 }
-
 
 /* ====================== Datos ====================== */
 
@@ -805,9 +788,9 @@ bool DataModel::insertRow(const QString& name, Record r, QString* err) {
 
     // ← AVANZAR contador monótono si la tabla tiene columna de Autonumeración (sea o no PK)
     {
-        const int ac = autoColumn(s);            // <-- en vez de pkColumn(s)
+        const int ac = autoColumn(s);
         if (ac >= 0) {
-            ensureAutoCounterInitialized(name);  // ya usa autoColumn internamente
+            ensureAutoCounterInitialized(name);
             bool ok = false;
             const qint64 v = (ac < r.size() ? r[ac].toLongLong(&ok) : 0);
             if (ok && v > m_lastIssuedId.value(name, 0)) {
@@ -815,8 +798,6 @@ bool DataModel::insertRow(const QString& name, Record r, QString* err) {
             }
         }
     }
-
-
 
     emit rowsChanged(name);
     return true;
@@ -1284,6 +1265,16 @@ bool DataModel::saveToJson(const QString& path, QString* err) const {
     }
     root["relationships"] = jrels;
 
+    // Consultas guardadas
+    {
+        QJsonArray jq;
+        for (const auto& q : m_queries) {
+            QJsonObject o; o["name"] = q.name; o["sql"] = q.sql;
+            jq.append(o);
+        }
+        root["queries"] = jq;
+    }
+
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly)) {
         if (err) *err = tr("No se puede escribir %1").arg(path);
@@ -1314,6 +1305,7 @@ bool DataModel::loadFromJson(const QString& path, QString* err) {
     m_tableDescriptions.clear();
     m_fksByChild.clear();
     m_freeList.clear();
+    m_queries.clear();
 
     // Tablas
     for (const auto& vtab : root.value("tables").toArray()) {
@@ -1389,6 +1381,14 @@ bool DataModel::loadFromJson(const QString& path, QString* err) {
         addRelationship(ctab, ccol, ptab, pcol, del, upd, &dummy); // reconstituye
     }
 
+    // Consultas guardadas
+    for (const auto& vq : root.value("queries").toArray()) {
+        const QJsonObject qo = vq.toObject();
+        SavedQuery q{ qo.value("name").toString(), qo.value("sql").toString() };
+        if (!q.name.trimmed().isEmpty())
+            m_queries.push_back(q);
+    }
+
     m_lastIssuedId.clear();
 
     return true;
@@ -1426,4 +1426,59 @@ DataModel::AvailStats DataModel::availStats(const QString& table) const {
     auto itf = m_freeList.constFind(table);
     st.freeSlots = (itf == m_freeList.constEnd()) ? 0 : itf->size();
     return st;
+}
+
+/* ====================== Consultas guardadas (API) ====================== */
+
+QStringList DataModel::queries() const {
+    QStringList names;
+    names.reserve(m_queries.size());
+    for (const auto& q : m_queries) names << q.name;
+    names.sort(Qt::CaseInsensitive);
+    return names;
+}
+
+QString DataModel::querySql(const QString& name) const {
+    for (const auto& q : m_queries) if (q.name.compare(name, Qt::CaseInsensitive) == 0) return q.sql;
+    return QString();
+}
+
+bool DataModel::addQuery(const QString& name, const QString& sql, QString* err) {
+    const QString n = name.trimmed();
+    if (n.isEmpty()) { if (err) *err = tr("El nombre de la consulta no puede estar vacío."); return false; }
+    for (const auto& q : m_queries) {
+        if (q.name.compare(n, Qt::CaseInsensitive) == 0) {
+            if (err) *err = tr("Ya existe una consulta llamada \"%1\".").arg(n);
+            return false;
+        }
+    }
+    m_queries.push_back({n, sql});
+    emit queriesChanged();
+    return true;
+}
+
+bool DataModel::updateQuery(const QString& name, const QString& sql, QString* err) {
+    const QString n = name.trimmed();
+    for (auto& q : m_queries) {
+        if (q.name.compare(n, Qt::CaseInsensitive) == 0) {
+            q.sql = sql;
+            emit queriesChanged();
+            return true;
+        }
+    }
+    if (err) *err = tr("No existe la consulta \"%1\".").arg(n);
+    return false;
+}
+
+bool DataModel::removeQuery(const QString& name, QString* err) {
+    const QString n = name.trimmed();
+    for (int i = 0; i < m_queries.size(); ++i) {
+        if (m_queries[i].name.compare(n, Qt::CaseInsensitive) == 0) {
+            m_queries.removeAt(i);
+            emit queriesChanged();
+            return true;
+        }
+    }
+    if (err) *err = tr("No existe la consulta \"%1\".").arg(n);
+    return false;
 }

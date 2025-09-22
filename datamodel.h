@@ -9,6 +9,7 @@
 #include <QString>
 #include <QStringList>
 #include <QList>
+#include <QSet>
 
 /* ======================== Relaciones (FK) ======================== */
 enum class FkAction { Restrict, Cascade, SetNull };
@@ -52,8 +53,11 @@ using Schema = QList<FieldDef>;
 // Una fila de datos (mismo orden/longitud que el Schema)
 using Record = QVector<QVariant>;
 
-
-
+/* ======================= Consultas guardadas ======================= */
+struct SavedQuery {
+    QString name;
+    QString sql;
+};
 
 /* ========================= Núcleo de datos ========================= */
 class DataModel : public QObject {
@@ -62,12 +66,8 @@ public:
     static DataModel& instance();
     void markColumnEdited(const QString& table, const QString& colName);
 
-
-    QVariant nextAutoNumber(const QString& name);  // ← sin const
-
+    QVariant nextAutoNumber(const QString& name);  // genera el siguiente autonum
     int autoColumn(const Schema& s) const;
-
-
 
     /* ---------- Persistencia ---------- */
     bool loadFromJson(const QString& file, QString* err = nullptr);
@@ -107,7 +107,6 @@ public:
     bool validate(const Schema& s, Record& r, QString* err = nullptr) const;
 
     int       pkColumn(const Schema& s) const;               // -1 si no hay
-    QVariant  nextAutoNumber(const QString& name) const;     // siguiente autonum
     QString   tableDescription(const QString& table) const;  // descripción de tabla
     void      setTableDescription(const QString& table, const QString& desc);
 
@@ -122,11 +121,20 @@ public:
     };
     AvailStats availStats(const QString& table) const;
 
+    /* ---------- Consultas guardadas (API) ---------- */
+    QStringList queries() const;                        // nombres ordenados
+    QString querySql(const QString& name) const;        // SQL por nombre (vacío si no existe)
+    bool addQuery(const QString& name, const QString& sql, QString* err = nullptr);
+    bool updateQuery(const QString& name, const QString& sql, QString* err = nullptr);
+    bool removeQuery(const QString& name, QString* err = nullptr);
+
 signals:
     void tableCreated(const QString& name);
     void tableDropped(const QString& name);
     void schemaChanged(const QString& name, const Schema& s);
     void rowsChanged(const QString& name);
+
+    void queriesChanged();  // cuando se agregan/actualizan/eliminan consultas
 
 private:
     explicit DataModel(QObject* parent = nullptr);
@@ -206,6 +214,9 @@ private:
     QMap<QString, Schema>          m_schemas; // tabla -> schema
     QMap<QString, QVector<Record>> m_data;    // tabla -> filas (incluye tombstones)
     QMap<QString, QString>         m_tableDescriptions; // nombre -> descripción
+
+    // Consultas guardadas
+    QVector<SavedQuery>            m_queries;
 };
 
 #endif // DATAMODEL_H

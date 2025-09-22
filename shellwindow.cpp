@@ -1377,6 +1377,40 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     v->addWidget(search);
     v->addWidget(list, 1);
 
+    // después de v->addWidget(list, 1);
+    auto *hdrQ = new QLabel("Queries");
+    hdrQ->setFixedHeight(24);
+    hdrQ->setStyleSheet("background:#eee; color:#333; font-weight:bold; padding:4px 8px;");
+    auto *listQueries = new QListWidget;
+    listQueries->setFrameShape(QFrame::NoFrame);
+    listQueries->setStyleSheet("QListWidget{border:none;} QListWidget::item{padding:6px 8px;}");
+
+    auto refreshQueries = [listQueries](){
+        listQueries->clear();
+        for (auto& n : DataModel::instance().queries()) listQueries->addItem(n);
+    };
+    refreshQueries();
+    QObject::connect(&DataModel::instance(), &DataModel::queriesChanged, this, refreshQueries);
+
+    v->addWidget(hdrQ);
+    v->addWidget(listQueries, 1);
+
+    // abrir una consulta al hacer doble‐clic
+    QObject::connect(listQueries, &QListWidget::itemDoubleClicked, this, [=](QListWidgetItem* it){
+        if (!it) return;
+        auto *stack = findChild<QStackedWidget*>("contentStack");
+        QueryPage* qp=nullptr;
+        for (int i=0;i<stack->count();++i) if ((qp=qobject_cast<QueryPage*>(stack->widget(i)))) break;
+        if (!qp) return;
+        // fuerza cargar en QueryPage:
+        // (si seguiste el snippet del combo en QueryPage, basta con setear el texto y ejecutar)
+        stack->setCurrentWidget(qp);
+        // llamar a un método helper en QueryPage (crea uno si quieres) para cargar por nombre
+        QMetaObject::invokeMethod(qp, "loadSavedByName", Qt::DirectConnection, Q_ARG(QString, it->text()));
+    });
+
+
+
     // =============== Derecha: stack + reserva ===============
     auto *rightContainer = new QWidget;
     rightContainer->setFixedSize(kRightW, kContentH);
