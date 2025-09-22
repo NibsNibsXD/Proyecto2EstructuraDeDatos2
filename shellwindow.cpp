@@ -2,6 +2,7 @@
 #include "tablespage.h"
 #include "recordspage.h"
 #include "datamodel.h"
+#include "querypage.h"   // <<< NUEVO
 
 #include <QApplication>
 #include <QScreen>
@@ -52,9 +53,6 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QToolTip>
 
-
-
-
 // Tamaños base
 static constexpr int kWinW   = 1400;
 static constexpr int kWinH   = 800;
@@ -70,7 +68,6 @@ static constexpr int kRightW = kWinW - kLeftW;                        // 1140
 // Alturas en la derecha
 static constexpr int kBottomReserveH = 36;                            // reserva inferior derecha
 static constexpr int kStackH = kContentH - kBottomReserveH;          // 574
-
 
 static QWidget* vSep(int h = 64) {
     auto *sep = new QFrame;
@@ -785,7 +782,7 @@ public:
 
 signals:
     void moved();
-     void requestNewRelation(const QString& table);
+    void requestNewRelation(const QString& table);
 
 protected:
     void paint(QPainter* p, const QStyleOptionGraphicsItem*, QWidget*) override {
@@ -1410,9 +1407,14 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
 
     stack->addWidget(tablesPage);   // index 0 (Design)
     stack->addWidget(recordsPage);  // index 1 (Datasheet)
-    auto *queriesPage   = makePage("Consultas (mock)");
+
+    // >>> REEMPLAZO: página real de consultas
+    auto *queriesPage = new QueryPage;
+    const int queriesIdx = stack->addWidget(queriesPage);
+
     auto *relationsPage = new RelationsPage;
     stack->addWidget(relationsPage);
+
     connect(relationsPage, &RelationsPage::requestAddRelation, this,
             [this, relationsPage](const QString& tableHint){
                 auto& dm = DataModel::instance();
@@ -1452,12 +1454,7 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
                 }
             });
 
-
-    // relaciones
-    stack->addWidget(queriesPage);  // index 2
-
-
-
+    // (Eliminado el antiguo: stack->addWidget(queriesPage) como "mock")
 
     auto *navigator = buildRecordNavigator(kRightW, kBottomReserveH, recordsPage);
     rightV->addWidget(stack);
@@ -1605,7 +1602,17 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         }
     }
 
-
+    // ====== Create → Queries: abrir QueryPage ======
+    if (auto *createRibbonW = ribbonStack->widget(1)) {
+        for (auto *b : createRibbonW->findChildren<QToolButton*>()) {
+            const QString t = b->text();
+            if (t == "Query Wizard" || t == "Query Design") {
+                connect(b, &QToolButton::clicked, this, [stack, queriesIdx]{
+                    stack->setCurrentIndex(queriesIdx);
+                });
+            }
+        }
+    }
 
     // ====== Enlazar estado de navegación (RecordsPage → barra inferior) ======
     auto posLbl   = navigator->findChild<QLabel*>("lblPos");
@@ -1710,7 +1717,8 @@ QWidget* ShellWindow::buildCreateRibbon() {
     hl->addWidget(vSep());
     hl->addWidget(gQuery);
     hl->addStretch();
-    // --- Placeholders para los botones del Ribbon "Create"
+
+    // --- Placeholders para botones de Tables (dejamos Queries sin popup; se conectan en el ctor) ---
     const auto btnsCreate = wrap->findChildren<QToolButton*>();
     for (auto *b : btnsCreate) {
         const QString t = b->text();
@@ -1749,8 +1757,8 @@ QWidget* ShellWindow::buildCreateRibbon() {
 #ifdef HAS_HOMEBTN_MEMBER
                 homeBtn->setChecked(true);                 // si tienes puntero miembro
                 createBtn->setChecked(false);
-#else
-                // Fallback: búscalos por texto
+#else \
+    // Fallback: búscalos por texto
                 for (auto *tb : this->findChildren<QToolButton*>()) {
                     if (tb->text() == "Home")   tb->setChecked(true);
                     if (tb->text() == "Create") tb->setChecked(false);
@@ -1769,13 +1777,8 @@ QWidget* ShellWindow::buildCreateRibbon() {
                 QMessageBox::information(this, "Create",
                                          QString("Placeholder: %1 (abriría diseñador de tablas).").arg(t));
             });
-        } else if (t == "Query Wizard" || t == "Query Design") {
-
-            connect(b, &QToolButton::clicked, this, [this, t]{
-                QMessageBox::information(this, "Create – Queries",
-                                         QString("Placeholder: %1 (página Consultas – mock).").arg(t));
-            });
         }
+        // NOTA: "Query Wizard"/"Query Design" se conectan en el constructor para abrir QueryPage
     }
 
     return wrap;
