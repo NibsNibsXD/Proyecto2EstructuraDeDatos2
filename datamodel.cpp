@@ -1443,6 +1443,18 @@ QString DataModel::querySql(const QString& name) const {
     return QString();
 }
 
+bool DataModel::saveQuery(const QString& name, const QString& sql, QString* err) {
+    // si existe => update, si no => add
+    for (auto& q : m_queries) {
+        if (q.name.compare(name.trimmed(), Qt::CaseInsensitive) == 0) {
+            q.sql = sql;
+            emit queriesChanged();
+            return true;
+        }
+    }
+    return addQuery(name, sql, err);
+}
+
 bool DataModel::addQuery(const QString& name, const QString& sql, QString* err) {
     const QString n = name.trimmed();
     if (n.isEmpty()) { if (err) *err = tr("El nombre de la consulta no puede estar vacío."); return false; }

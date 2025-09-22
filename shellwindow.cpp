@@ -1792,7 +1792,7 @@ QWidget* ShellWindow::buildCreateRibbon() {
                 homeBtn->setChecked(true);                 // si tienes puntero miembro
                 createBtn->setChecked(false);
 #else \
-                // Fallback: búscalos por texto
+    // Fallback: búscalos por texto
                 for (auto *tb : this->findChildren<QToolButton*>()) {
                     if (tb->text() == "Home")   tb->setChecked(true);
                     if (tb->text() == "Create") tb->setChecked(false);
@@ -1910,5 +1910,16 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
     return wrap;
 }
 
+// ======== Stubs de compatibilidad (evitan "undefined reference") ========
+void ShellWindow::refreshSavedQueries() {}
+void ShellWindow::onQueryActivated(QListWidgetItem*) {}
+void ShellWindow::onShowContextMenu(const QPoint&) {}
+void ShellWindow::onNewQuery() {}
+void ShellWindow::onRenameSelectedQuery() {}
+void ShellWindow::onDeleteSelectedQuery() {}
+void ShellWindow::onOpenInDesigner() {}
+void ShellWindow::onRunSelectedQuery() {}
+void ShellWindow::onDesignerSaved(const QString&) {}
+// ========================================================================
 
 #include "shellwindow.moc"

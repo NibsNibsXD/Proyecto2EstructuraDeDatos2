@@ -124,6 +124,11 @@ public:
     /* ---------- Consultas guardadas (API) ---------- */
     QStringList queries() const;                        // nombres ordenados
     QString querySql(const QString& name) const;        // SQL por nombre (vacío si no existe)
+
+    // Guarda una consulta (crea o actualiza según exista)
+    bool saveQuery(const QString& name, const QString& sql, QString* err = nullptr);
+
+    // Operaciones explícitas
     bool addQuery(const QString& name, const QString& sql, QString* err = nullptr);
     bool updateQuery(const QString& name, const QString& sql, QString* err = nullptr);
     bool removeQuery(const QString& name, QString* err = nullptr);

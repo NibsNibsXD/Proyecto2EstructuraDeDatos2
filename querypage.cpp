@@ -11,6 +11,9 @@
 #include <QTableWidget>
 #include <QLabel>
 #include <QKeyEvent>
+#include <QToolBar>
+#include <QAction>
+#include <QInputDialog>
 #include <algorithm>
 
 static bool isTomb(const Record& r){ return r.isEmpty(); }
@@ -100,6 +103,17 @@ QueryPage::QueryPage(QWidget* parent) : QWidget(parent) {
     root->setContentsMargins(10,10,10,10);
     root->setSpacing(8);
 
+    // ===== Toolbar (Guardar) =====
+    toolbar_ = new QToolBar(this);
+    actSave_   = toolbar_->addAction(style()->standardIcon(QStyle::SP_DialogSaveButton), tr("Guardar"));
+    actSaveAs_ = toolbar_->addAction(style()->standardIcon(QStyle::SP_DialogOpenButton), tr("Guardar como…"));
+    actSave_->setShortcut(QKeySequence::Save);              // Ctrl+S
+    actSaveAs_->setShortcut(QKeySequence("Ctrl+Shift+S"));  // Ctrl+Shift+S
+    connect(actSave_,   &QAction::triggered, this, &QueryPage::save);
+    connect(actSaveAs_, &QAction::triggered, this, &QueryPage::saveAs);
+    root->addWidget(toolbar_);
+
+    // ===== Editor + acciones rápidas =====
     auto* top = new QWidget;
     auto* th = new QHBoxLayout(top);
     th->setContentsMargins(0,0,0,0);
@@ -110,7 +124,7 @@ QueryPage::QueryPage(QWidget* parent) : QWidget(parent) {
         "SELECT *|col1,col2 FROM tabla [WHERE col op valor [AND col op valor ...]] [ORDER BY col [DESC]] [LIMIT n];\n"
         "INSERT INTO tabla (col1,col2,...) VALUES (v1,v2,...);\n"
         "DELETE FROM tabla [WHERE col op valor];\n"
-        "(Ctrl+Enter para ejecutar)"
+        "(Ctrl+Enter para ejecutar · Ctrl+S para guardar)"
         );
     m_sql->setFixedHeight(120);
 
@@ -129,6 +143,7 @@ QueryPage::QueryPage(QWidget* parent) : QWidget(parent) {
     side->addWidget(m_examples);
     side->addStretch();
     th->addLayout(side);
+    top->setLayout(th);
 
     m_grid = new QTableWidget;
     m_grid->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -144,15 +159,22 @@ QueryPage::QueryPage(QWidget* parent) : QWidget(parent) {
     connect(clear, &QToolButton::clicked, this, &QueryPage::clearEditor);
     connect(m_examples, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &QueryPage::loadExample);
 
-    // atajo Ctrl+Enter (Ctrl+Return ejecuta)
+    // atajo Ctrl+Enter (Ctrl+Return ejecuta) y Ctrl+S / Ctrl+Shift+S (ya con acciones)
     m_sql->installEventFilter(this);
 }
 
 bool QueryPage::eventFilter(QObject* obj, QEvent* ev){
     if(obj==m_sql && ev->type()==QEvent::KeyPress){
         auto* ke = static_cast<QKeyEvent*>(ev);
+        // Ejecutar
         if((ke->modifiers() & Qt::ControlModifier) && (ke->key()==Qt::Key_Return || ke->key()==Qt::Key_Enter)){
             runQuery();
+            return true;
+        }
+        // Guardar (además de los atajos de QAction, por si el foco está en el editor)
+        if ((ke->modifiers() & Qt::ControlModifier) && ke->key()==Qt::Key_S) {
+            if (ke->modifiers() & Qt::ShiftModifier) saveAs();
+            else save();
             return true;
         }
     }
@@ -164,6 +186,7 @@ void QueryPage::clearEditor(){
     m_status->clear();
     m_grid->setRowCount(0);
     m_grid->setColumnCount(0);
+    currentSql_.clear();
 }
 
 void QueryPage::loadExample(int idx){
@@ -296,7 +319,7 @@ void QueryPage::runQuery(){
     QString sql = m_sql->toPlainText().trimmed();
     if(sql.isEmpty()) return;
 
-    // ⬇️ NUEVO: quita ; final (si lo hay) para no contaminar WHERE/valores
+    // ⬇️ quita ; final (si lo hay) para no contaminar WHERE/valores
     if (sql.endsWith(';'))
         sql.chop(1);
 
@@ -417,8 +440,8 @@ void QueryPage::execInsert(const InsertSpec& q){
 void QueryPage::setSqlText(const QString& sql){
     m_sql->setPlainText(sql);
     m_sql->setFocus();
+    currentSql_ = sql;
 }
-
 
 void QueryPage::execDelete(const DeleteSpec& q){
     auto& dm = DataModel::instance();
@@ -459,4 +482,83 @@ void QueryPage::execDelete(const DeleteSpec& q){
         return;
     }
     m_status->setText(QString::number(toDel.size())+" fila(s) borradas");
+}
+
+// ===================== Guardado / Carga =====================
+
+QString QueryPage::collectCurrentQueryText() const {
+    return m_sql ? m_sql->toPlainText() : QString();
+}
+
+bool QueryPage::persist(const QString& name, const QString& sql, QString* err){
+    // Se asume que DataModel expone saveQuery(name, sql, &err) y emite queriesChanged
+    return DataModel::instance().saveQuery(name, sql, err);
+}
+
+void QueryPage::save(){
+    const QString sql = collectCurrentQueryText().trimmed();
+    if (sql.isEmpty()) {
+        QMessageBox::information(this, tr("Guardar consulta"), tr("No hay SQL para guardar."));
+        return;
+    }
+    if (currentName_.isEmpty()) {
+        saveAs();
+        return;
+    }
+    QString err;
+    if (!persist(currentName_, sql, &err)) {
+        QMessageBox::warning(this, tr("Guardar consulta"), err.isEmpty() ? tr("No se pudo guardar.") : err);
+        return;
+    }
+    currentSql_ = sql;
+    m_status->setText(tr("Guardado como “%1”.").arg(currentName_));
+    emit saved(currentName_);
+}
+
+void QueryPage::saveAs(){
+    const QString sql = collectCurrentQueryText().trimmed();
+    if (sql.isEmpty()) {
+        QMessageBox::information(this, tr("Guardar como…"), tr("No hay SQL para guardar."));
+        return;
+    }
+    bool ok=false;
+    QString name = QInputDialog::getText(this, tr("Guardar consulta"),
+                                         tr("Nombre:"), QLineEdit::Normal,
+                                         currentName_.isEmpty() ? tr("Nueva consulta") : currentName_, &ok).trimmed();
+    if (!ok || name.isEmpty()) return;
+
+    // Si ya existe, confirmar sobreescritura
+    const auto names = DataModel::instance().queries();
+    bool exists = false;
+    for (const auto& n : names) if (QString::compare(n, name, Qt::CaseInsensitive)==0) { exists = true; break; }
+    if (exists) {
+        auto ret = QMessageBox::question(this, tr("Guardar como…"),
+                                         tr("“%1” ya existe. ¿Deseas reemplazarla?").arg(name),
+                                         QMessageBox::Yes|QMessageBox::No, QMessageBox::No);
+        if (ret != QMessageBox::Yes) return;
+    }
+
+    QString err;
+    if (!persist(name, sql, &err)) {
+        QMessageBox::warning(this, tr("Guardar como…"), err.isEmpty() ? tr("No se pudo guardar.") : err);
+        return;
+    }
+    currentName_ = name;
+    currentSql_  = sql;
+    m_status->setText(tr("Guardado como “%1”.").arg(currentName_));
+    emit savedAs(currentName_);
+}
+
+void QueryPage::loadSavedByName(const QString& name){
+    if (name.trimmed().isEmpty()) return;
+    // Se asume que DataModel expone querySql(name)
+    const QString sql = DataModel::instance().querySql(name);
+    if (sql.isEmpty()) {
+        QMessageBox::warning(this, tr("Abrir consulta"), tr("No se encontró SQL para “%1”.").arg(name));
+        return;
+    }
+    currentName_ = name;
+    currentSql_  = sql;
+    setSqlText(sql);
+    m_status->setText(tr("Cargada “%1”.").arg(currentName_));
 }
