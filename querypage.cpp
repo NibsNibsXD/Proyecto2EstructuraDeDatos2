@@ -414,6 +414,12 @@ void QueryPage::execInsert(const InsertSpec& q){
     m_status->setText("1 fila insertada");
 }
 
+void QueryPage::setSqlText(const QString& sql){
+    m_sql->setPlainText(sql);
+    m_sql->setFocus();
+}
+
+
 void QueryPage::execDelete(const DeleteSpec& q){
     auto& dm = DataModel::instance();
     const QString table = resolveTableNameCI(q.table);

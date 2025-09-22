@@ -25,6 +25,7 @@ private slots:
     void runQuery();
     void clearEditor();
     void loadExample(int idx);
+    void setSqlText(const QString& sql);
 
 private:
     struct SelectSpec {
