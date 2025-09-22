@@ -2,6 +2,7 @@
 #include "tablespage.h"
 #include "recordspage.h"
 #include "datamodel.h"
+#include "querypage.h"   // <<< NUEVO
 
 #include <QApplication>
 #include <QScreen>
@@ -50,9 +51,7 @@
 #include <functional>
 #include <QGraphicsSceneHoverEvent>
 #include <QGraphicsSceneMouseEvent>
-
-
-
+#include <QToolTip>
 
 // Tamaños base
 static constexpr int kWinW   = 1400;
@@ -69,7 +68,6 @@ static constexpr int kRightW = kWinW - kLeftW;                        // 1140
 // Alturas en la derecha
 static constexpr int kBottomReserveH = 36;                            // reserva inferior derecha
 static constexpr int kStackH = kContentH - kBottomReserveH;          // 574
-
 
 static QWidget* vSep(int h = 64) {
     auto *sep = new QFrame;
@@ -784,7 +782,7 @@ public:
 
 signals:
     void moved();
-     void requestNewRelation(const QString& table);
+    void requestNewRelation(const QString& table);
 
 protected:
     void paint(QPainter* p, const QStyleOptionGraphicsItem*, QWidget*) override {
@@ -1379,6 +1377,40 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     v->addWidget(search);
     v->addWidget(list, 1);
 
+    // después de v->addWidget(list, 1);
+    auto *hdrQ = new QLabel("Queries");
+    hdrQ->setFixedHeight(24);
+    hdrQ->setStyleSheet("background:#eee; color:#333; font-weight:bold; padding:4px 8px;");
+    auto *listQueries = new QListWidget;
+    listQueries->setFrameShape(QFrame::NoFrame);
+    listQueries->setStyleSheet("QListWidget{border:none;} QListWidget::item{padding:6px 8px;}");
+
+    auto refreshQueries = [listQueries](){
+        listQueries->clear();
+        for (auto& n : DataModel::instance().queries()) listQueries->addItem(n);
+    };
+    refreshQueries();
+    QObject::connect(&DataModel::instance(), &DataModel::queriesChanged, this, refreshQueries);
+
+    v->addWidget(hdrQ);
+    v->addWidget(listQueries, 1);
+
+    // abrir una consulta al hacer doble‐clic
+    QObject::connect(listQueries, &QListWidget::itemDoubleClicked, this, [=](QListWidgetItem* it){
+        if (!it) return;
+        auto *stack = findChild<QStackedWidget*>("contentStack");
+        QueryPage* qp=nullptr;
+        for (int i=0;i<stack->count();++i) if ((qp=qobject_cast<QueryPage*>(stack->widget(i)))) break;
+        if (!qp) return;
+        // fuerza cargar en QueryPage:
+        // (si seguiste el snippet del combo en QueryPage, basta con setear el texto y ejecutar)
+        stack->setCurrentWidget(qp);
+        // llamar a un método helper en QueryPage (crea uno si quieres) para cargar por nombre
+        QMetaObject::invokeMethod(qp, "loadSavedByName", Qt::DirectConnection, Q_ARG(QString, it->text()));
+    });
+
+
+
     // =============== Derecha: stack + reserva ===============
     auto *rightContainer = new QWidget;
     rightContainer->setFixedSize(kRightW, kContentH);
@@ -1409,9 +1441,14 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
 
     stack->addWidget(tablesPage);   // index 0 (Design)
     stack->addWidget(recordsPage);  // index 1 (Datasheet)
-    auto *queriesPage   = makePage("Consultas (mock)");
+
+    // >>> REEMPLAZO: página real de consultas
+    auto *queriesPage = new QueryPage;
+    const int queriesIdx = stack->addWidget(queriesPage);
+
     auto *relationsPage = new RelationsPage;
     stack->addWidget(relationsPage);
+
     connect(relationsPage, &RelationsPage::requestAddRelation, this,
             [this, relationsPage](const QString& tableHint){
                 auto& dm = DataModel::instance();
@@ -1451,12 +1488,7 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
                 }
             });
 
-
-    // relaciones
-    stack->addWidget(queriesPage);  // index 2
-
-
-
+    // (Eliminado el antiguo: stack->addWidget(queriesPage) como "mock")
 
     auto *navigator = buildRecordNavigator(kRightW, kBottomReserveH, recordsPage);
     rightV->addWidget(stack);
@@ -1503,13 +1535,14 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
                 }
             });
 
-    // También reaccionar a clicks directos en la lista
+    // Click en una tabla: solo seleccionar/sincronizar, SIN navegar a Datasheet
     connect(list, &QListWidget::itemClicked, this, [=](QListWidgetItem* it){
         if (!it) return;
         const QString t = it->text();
         recordsPage->setTableFromFieldDefs(t, tablesPage->schemaFor(t));
-        stack->setCurrentWidget(recordsPage);
+        // NO stack->setCurrentWidget(recordsPage);
     });
+
 
     // ====== Ribbon: Views (Datasheet / Design) ======
     QToolButton *btnDatasheet = nullptr, *btnDesign = nullptr;
@@ -1519,15 +1552,60 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     }
     if (btnDatasheet) connect(btnDatasheet, &QToolButton::clicked, this, [=]{
             auto *it = list->currentItem();
-            if (it) {
-                const QString t = it->text();
-                recordsPage->setTableFromFieldDefs(t, tablesPage->schemaFor(t));
+            if (!it) return;
+
+            const QString t = it->text();
+            const Schema s  = DataModel::instance().schema(t);
+
+            bool hasPk = false;
+            for (const auto& f : s) { if (f.pk) { hasPk = true; break; } }
+
+            if (!hasPk) {
+                QMessageBox::warning(this,
+                                     tr("Clave primaria requerida"),
+                                     tr("Seleccione una llave primaria (PK) para continuar al Datasheet."));
+                return; // ← ÚNICO lugar donde mostramos el mensaje
             }
+
+            recordsPage->setTableFromFieldDefs(t, s);
             stack->setCurrentWidget(recordsPage);
         });
+
     if (btnDesign) connect(btnDesign, &QToolButton::clicked, this, [=]{
+            // Bloqueo: no salir del Datasheet si hay requeridos vacíos
+            if (stack->currentWidget() == recordsPage) {
+                QModelIndex idx;
+                if (recordsPage->hasUnfilledRequired(&idx)) {
+                    auto *sheet = recordsPage->sheet(); // o findChild<QTableWidget*>("twRegistros")
+                    sheet->setCurrentCell(idx.row(), idx.column());
+                    QToolTip::showText(
+                        sheet->viewport()->mapToGlobal(
+                            sheet->visualItemRect(sheet->item(idx.row(), idx.column())).bottomRight()),
+                        tr("Complete el campo requerido para continuar."),
+                        sheet
+                        );
+                    return; // ← NO cambiamos a Design
+                }
+            }
+
+            // OK: cambiar a Design
             stack->setCurrentWidget(tablesPage);
         });
+
+
+    // Deshabilitar el botón de la vista actual y habilitar el otro
+    auto updateViewsUi = [=]{
+        const bool inDatasheet = (stack->currentWidget() == recordsPage);
+        const bool inDesign    = (stack->currentWidget() == tablesPage);
+        if (btnDatasheet) btnDatasheet->setEnabled(!inDatasheet);
+        if (btnDesign)    btnDesign->setEnabled(!inDesign);
+    };
+    // Inicializa el estado actual
+    updateViewsUi();
+    // Mantenerlo sincronizado al cambiar de página
+    QObject::connect(stack, &QStackedWidget::currentChanged, this, [=](int){
+        updateViewsUi();
+    });
 
     // ====== Ribbon: Records / Find (wire actions) ======
     if (auto *homeRibbon = ribbonStack->widget(0)) {
@@ -1558,7 +1636,17 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         }
     }
 
-
+    // ====== Create → Queries: abrir QueryPage ======
+    if (auto *createRibbonW = ribbonStack->widget(1)) {
+        for (auto *b : createRibbonW->findChildren<QToolButton*>()) {
+            const QString t = b->text();
+            if (t == "Query Wizard" || t == "Query Design") {
+                connect(b, &QToolButton::clicked, this, [stack, queriesIdx]{
+                    stack->setCurrentIndex(queriesIdx);
+                });
+            }
+        }
+    }
 
     // ====== Enlazar estado de navegación (RecordsPage → barra inferior) ======
     auto posLbl   = navigator->findChild<QLabel*>("lblPos");
@@ -1663,7 +1751,8 @@ QWidget* ShellWindow::buildCreateRibbon() {
     hl->addWidget(vSep());
     hl->addWidget(gQuery);
     hl->addStretch();
-    // --- Placeholders para los botones del Ribbon "Create"
+
+    // --- Placeholders para botones de Tables (dejamos Queries sin popup; se conectan en el ctor) ---
     const auto btnsCreate = wrap->findChildren<QToolButton*>();
     for (auto *b : btnsCreate) {
         const QString t = b->text();
@@ -1696,9 +1785,24 @@ QWidget* ShellWindow::buildCreateRibbon() {
                     return;
                 }
 
-                // Mantenerse en Design view (opcionalmente fuerza el stack a Design)
-                auto stacks = this->findChildren<QStackedWidget*>();
-                if (!stacks.isEmpty()) stacks.first()->setCurrentIndex(0);
+/* === Forzar volver a Home (selección visual y ribbon) === */
+
+// 1) Marca el botón Home y desmarca Create (según lo que tengas disponible)
+#ifdef HAS_HOMEBTN_MEMBER
+                homeBtn->setChecked(true);                 // si tienes puntero miembro
+                createBtn->setChecked(false);
+#else \
+    // Fallback: búscalos por texto
+                for (auto *tb : this->findChildren<QToolButton*>()) {
+                    if (tb->text() == "Home")   tb->setChecked(true);
+                    if (tb->text() == "Create") tb->setChecked(false);
+                }
+#endif
+
+                // 2) Muestra el ribbon de Home (página 0)
+                auto ribbons = this->findChildren<QStackedWidget*>();
+                if (!ribbons.isEmpty()) ribbons.first()->setCurrentIndex(0);
+
             });
 
 
@@ -1707,28 +1811,22 @@ QWidget* ShellWindow::buildCreateRibbon() {
                 QMessageBox::information(this, "Create",
                                          QString("Placeholder: %1 (abriría diseñador de tablas).").arg(t));
             });
-        } else if (t == "Query Wizard" || t == "Query Design") {
-
-            connect(b, &QToolButton::clicked, this, [this, t]{
-                QMessageBox::information(this, "Create – Queries",
-                                         QString("Placeholder: %1 (página Consultas – mock).").arg(t));
-            });
         }
+        // NOTA: "Query Wizard"/"Query Design" se conectan en el constructor para abrir QueryPage
     }
 
     return wrap;
 }
-
 QWidget* ShellWindow::buildDBToolsRibbon() {
     auto *wrap = new QWidget;
     auto *hl = new QHBoxLayout(wrap);
     hl->setContentsMargins(8,2,8,2);
     hl->setSpacing(16);
 
-    auto *gIdx = makeRibbonGroup("Indexes", { makeActionBtn("Indexes") });
-    auto *gRel = makeRibbonGroup("Relationships", { makeActionBtn("Relationships") });
-    auto *gAvail = makeRibbonGroup("Avail List", { makeActionBtn("Avail List") });
-    auto *gCompact = makeRibbonGroup("Compact", { makeActionBtn("Compact") });
+    auto *gIdx     = makeRibbonGroup("Indexes",       { makeActionBtn("Indexes") });
+    auto *gRel     = makeRibbonGroup("Relationships", { makeActionBtn("Relationships") });
+    auto *gAvail   = makeRibbonGroup("Avail List",    { makeActionBtn("Avail List") });
+    auto *gCompact = makeRibbonGroup("Compact",       { makeActionBtn("Compact") });
 
     hl->addWidget(gIdx);
     hl->addWidget(vSep());
@@ -1738,15 +1836,18 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
     hl->addWidget(vSep());
     hl->addWidget(gCompact);
     hl->addStretch();
-    // --- Placeholders para los botones del Ribbon "Database Tools"
+
+    // --- Actions para "Database Tools"
     const auto btnsDb = wrap->findChildren<QToolButton*>();
     for (auto *b : btnsDb) {
         const QString t = b->text();
+
         if (t == "Indexes") {
             connect(b, &QToolButton::clicked, this, [this]{
                 QMessageBox::information(this, "Database Tools",
                                          "Placeholder: UI de índices (mock).");
             });
+
         } else if (t == "Relationships") {
             connect(b, &QToolButton::clicked, this, [this]{
                 auto *content = this->findChild<QStackedWidget*>("contentStack");
@@ -1760,15 +1861,44 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
                 }
                 if (!relPage) return;
 
-                relPage->refreshSidebarFromModel(); // ← aquí
+                relPage->refreshSidebarFromModel();
                 relPage->startBlank();
                 content->setCurrentWidget(relPage);
             });
-        }else if (t == "Avail List") {
+
+        } else if (t == "Avail List") {
+            // <<< CAMBIO: abrir Records (Datasheet) con la tabla seleccionada/primera >>>
             connect(b, &QToolButton::clicked, this, [this]{
-                QMessageBox::information(this, "Database Tools",
-                                         "Placeholder: Lista de disponibilidad (mock).");
+                // 1) Localizar el stack principal
+                auto *content = this->findChild<QStackedWidget*>("contentStack");
+                if (!content) return;
+
+                // 2) Encontrar RecordsPage y TablesPage dentro del stack
+                RecordsPage* recPage = nullptr;
+                TablesPage*  tabPage = nullptr;
+                for (int i = 0; i < content->count(); ++i) {
+                    if (!recPage) recPage = qobject_cast<RecordsPage*>(content->widget(i));
+                    if (!tabPage) tabPage = qobject_cast<TablesPage*>(content->widget(i));
+                }
+                if (!recPage || !tabPage) return;
+
+                // 3) Tomar la tabla seleccionada en el panel izquierdo (o la primera disponible)
+                QString tableName;
+                if (auto *list = tabPage->tableListWidget()) {
+                    if (auto *it = list->currentItem()) tableName = it->text();
+                }
+                if (tableName.isEmpty()) {
+                    const auto tables = DataModel::instance().tables();
+                    if (!tables.isEmpty()) tableName = tables.first();
+                }
+
+                // 4) Sincronizar RecordsPage con esa tabla y mostrar la vista Datasheet
+                if (!tableName.isEmpty()) {
+                    recPage->setTableFromFieldDefs(tableName, tabPage->schemaFor(tableName));
+                }
+                content->setCurrentWidget(recPage);
             });
+
         } else if (t == "Compact") {
             connect(b, &QToolButton::clicked, this, [this]{
                 QMessageBox::information(this, "Database Tools",
@@ -1779,5 +1909,17 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
 
     return wrap;
 }
+
+// ======== Stubs de compatibilidad (evitan "undefined reference") ========
+void ShellWindow::refreshSavedQueries() {}
+void ShellWindow::onQueryActivated(QListWidgetItem*) {}
+void ShellWindow::onShowContextMenu(const QPoint&) {}
+void ShellWindow::onNewQuery() {}
+void ShellWindow::onRenameSelectedQuery() {}
+void ShellWindow::onDeleteSelectedQuery() {}
+void ShellWindow::onOpenInDesigner() {}
+void ShellWindow::onRunSelectedQuery() {}
+void ShellWindow::onDesignerSaved(const QString&) {}
+// ========================================================================
 
 #include "shellwindow.moc"

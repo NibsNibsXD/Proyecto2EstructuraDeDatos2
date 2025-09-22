@@ -60,16 +60,28 @@ private:
     QPushButton  *btnAddField = nullptr;
     QPushButton  *btnRemoveField = nullptr;
 
+
+    int m_activeRow = -1;
+
+    // === Helpers para controlar el único Autonumeración por tabla ===
+    int        autonumRow() const;                 // índice de la fila que es Autonumeración, o -1
+    QComboBox* typeComboAt(int row) const;         // combo "Tipo de datos" de la fila 'row'
+    int        indexOfAutonum(QComboBox* cb) const;// índice del item "Autonumeración" en 'cb', o -1
+    void       refreshAutonumLocks();              // deshabilita "Autonumeración" en combos que no son la fila auto
+
+
     // Propiedades abajo
     QTabWidget   *propTabs = nullptr;
 
     // General
     QComboBox   *propFormato = nullptr;      // texto "Formato" para tipos NO auto
     QComboBox    *propAutoFormato = nullptr;  // Long Integer / Replication ID (solo auto)
-    QLineEdit    *propValorPred = nullptr;
 
-    QLineEdit *propTextSize = nullptr;
-    QCheckBox    *propRequerido = nullptr;
+
+    QLineEdit   *propTextSize = nullptr;
+    QCheckBox   *propRequerido = nullptr;
+
+    QComboBox   *propDecimalPlaces = nullptr;   // <<--- NUEVO
 
     // (Opcionales, ya no se muestran)
     QComboBox    *propAutoNewValues = nullptr;
@@ -93,6 +105,7 @@ private:
     void pullPropsFromUi(FieldDef &fd);
     void buildRowFromField(int row, const FieldDef &fd);
     void connectRowEditors(int row);
+
     QString currentTableName() const;
 
     void clearPropsUi();
