@@ -5,13 +5,20 @@
 #include <QRegularExpression>
 #include <QHeaderView>
 #include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QToolButton>
+#include <QComboBox>
+#include <QTableWidget>
+#include <QLabel>
+#include <QKeyEvent>
 #include <algorithm>
 
 static bool isTomb(const Record& r){ return r.isEmpty(); }
 
 // -------- helpers locales (evitan usar métodos privados de DataModel) --------
 static int schemaFieldIndex(const Schema& s, const QString& name){
-    for(int i=0;i<s.size();++i) if(s[i].name.compare(name, Qt::CaseInsensitive)==0) return i;
+    for (int i = 0; i < s.size(); ++i)
+        if (s[i].name.compare(name, Qt::CaseInsensitive) == 0) return i;
     return -1;
 }
 static int cmpVar(const QVariant& a, const QVariant& b){
@@ -31,7 +38,7 @@ static int cmpVar(const QVariant& a, const QVariant& b){
         if(da<db) return -1; if(da>db) return 1; return 0;
     }
 
-    // Numérico: si ambos se pueden interpretar como número, comparamos como double
+    // Numérico
     bool okA=false, okB=false;
     double da=a.toDouble(&okA), db=b.toDouble(&okB);
     if(okA && okB){
@@ -48,7 +55,6 @@ static int cmpVar(const QVariant& a, const QVariant& b){
     return QString::compare(a.toString(), b.toString(), Qt::CaseInsensitive);
 }
 static bool equalVar(const QVariant& a, const QVariant& b){
-    // Igualdad que maneja NULLs y tipos
     if(!a.isValid() && !b.isValid()) return true;
     return cmpVar(a,b)==0;
 }
@@ -76,6 +82,16 @@ static QList<QString> tokenize(const QString& s){
     }
     if(!cur.isEmpty()) out<<cur;
     return out;
+}
+
+// -------- resolver nombre real de tabla ignorando mayúsc/minúsc --------
+static QString resolveTableNameCI(const QString& raw) {
+    auto &dm = DataModel::instance();
+    for (const QString& t : dm.tables()) {
+        if (QString::compare(t, raw, Qt::CaseInsensitive) == 0)
+            return t;
+    }
+    return QString();
 }
 
 // ===================== QueryPage =====================
@@ -197,8 +213,12 @@ bool QueryPage::parseSelect(const QString& sql, SelectSpec& out, QString* err){
     QString colsPart = s.mid(7, pFrom-7).trimmed();
     QString rest = s.mid(pFrom+6).trimmed();
 
-    // tabla
-    QString table=rest; int pWS=table.indexOf(' '); if(pWS>0) table=table.left(pWS);
+    // ---- tabla (recorta ; si viene pegado) ----
+    QString table = rest;
+    int pWS = table.indexOf(' ');
+    if(pWS>0) table = table.left(pWS);
+    table = table.trimmed();
+    if(table.endsWith(';')) table.chop(1);   // *** FIX ***
     out.table = table;
     rest = rest.mid(table.size()).trimmed();
 
@@ -268,13 +288,18 @@ bool QueryPage::parseDelete(const QString& sql, DeleteSpec& out, QString* err){
     QRegularExpression rc("^([A-Za-z_][A-Za-z0-9_]*)\\s*(=|!=|<>|>=|<=|>|<)\\s*(.+)$");
     auto mw = rc.match(m.captured(3).trimmed());
     if(!mw.hasMatch()){ if(err) *err="WHERE inválido"; return false; }
-    out.hasWhere=true; out.where={ mw.captured(1), mw.captured(2), parseLiteral(mw.captured(3).trimmed()) };
+    out.hasWhere=true; out.where={ mw.captured(1), mw.captured(2), parseLiteral(m.captured(3).trimmed()) };
     return true;
 }
 
 void QueryPage::runQuery(){
     QString sql = m_sql->toPlainText().trimmed();
     if(sql.isEmpty()) return;
+
+    // ⬇️ NUEVO: quita ; final (si lo hay) para no contaminar WHERE/valores
+    if (sql.endsWith(';'))
+        sql.chop(1);
+
     QString err;
     SelectSpec qs; InsertSpec qi; DeleteSpec qd;
     if(parseSelect(sql, qs, &err)) { execSelect(qs); return; }
@@ -285,8 +310,10 @@ void QueryPage::runQuery(){
 
 void QueryPage::execSelect(const SelectSpec& q){
     auto& dm = DataModel::instance();
-    const auto s = dm.schema(q.table);
-    if(s.isEmpty()){ QMessageBox::warning(this, "SELECT", "Tabla no encontrada"); return; }
+    const QString table = resolveTableNameCI(q.table);
+    if(table.isEmpty()){ QMessageBox::warning(this, "SELECT", "Tabla no encontrada"); return; }
+
+    const auto s = dm.schema(table);
 
     // columnas
     QStringList cols = q.columns;
@@ -328,7 +355,7 @@ void QueryPage::execSelect(const SelectSpec& q){
     // recolecta
     struct Row { int idx; const Record* rec; };
     QVector<Row> rows;
-    const auto& data = dm.rows(q.table);
+    const auto& data = dm.rows(table);
     rows.reserve(data.size());
     for(int i=0;i<data.size();++i){
         const auto& r=data[i]; if(isTomb(r)) continue;
@@ -364,8 +391,10 @@ void QueryPage::execSelect(const SelectSpec& q){
 
 void QueryPage::execInsert(const InsertSpec& q){
     auto& dm = DataModel::instance();
-    const auto s = dm.schema(q.table);
-    if(s.isEmpty()){ QMessageBox::warning(this, "INSERT", "Tabla no encontrada"); return; }
+    const QString table = resolveTableNameCI(q.table);
+    if(table.isEmpty()){ QMessageBox::warning(this, "INSERT", "Tabla no encontrada"); return; }
+
+    const auto s = dm.schema(table);
 
     Record rec; rec.resize(s.size());
     for(int i=0;i<rec.size();++i) rec[i]=QVariant(); // NULLs por defecto
@@ -378,7 +407,7 @@ void QueryPage::execInsert(const InsertSpec& q){
     }
 
     QString err;
-    if(!dm.insertRow(q.table, rec, &err)){
+    if(!dm.insertRow(table, rec, &err)){
         QMessageBox::warning(this, "INSERT", err);
         return;
     }
@@ -387,11 +416,13 @@ void QueryPage::execInsert(const InsertSpec& q){
 
 void QueryPage::execDelete(const DeleteSpec& q){
     auto& dm = DataModel::instance();
-    const auto s = dm.schema(q.table);
-    if(s.isEmpty()){ QMessageBox::warning(this, "DELETE", "Tabla no encontrada"); return; }
+    const QString table = resolveTableNameCI(q.table);
+    if(table.isEmpty()){ QMessageBox::warning(this, "DELETE", "Tabla no encontrada"); return; }
+
+    const auto s = dm.schema(table);
 
     QList<int> toDel;
-    const auto& data = dm.rows(q.table);
+    const auto& data = dm.rows(table);
 
     auto match = [&](const Record& r){
         if(!q.hasWhere) return true;
@@ -417,7 +448,7 @@ void QueryPage::execDelete(const DeleteSpec& q){
     if(toDel.isEmpty()){ m_status->setText("0 filas borradas"); return; }
 
     QString err;
-    if(!dm.removeRows(q.table, toDel, &err)){
+    if(!dm.removeRows(table, toDel, &err)){
         QMessageBox::warning(this, "DELETE", err);
         return;
     }
