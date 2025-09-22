@@ -92,7 +92,10 @@ private:
 
 
 
+
+    // (Si aún no existe) recordar la última opción elegida en el menú de filtro
     QString m_lastFilterValue;
+
 
 
     // Mapea fila visible (vista) -> fila real en DataModel
@@ -142,6 +145,7 @@ private:
     // Búsqueda
     bool filaCoincideBusqueda(int row, const QString& term) const;
     void aplicarFiltroBusqueda(const QString& term);
+    void updateFilterStatus(const QString &filterText);
 
     // Navegación visible (legacy)
     void updateNavState();

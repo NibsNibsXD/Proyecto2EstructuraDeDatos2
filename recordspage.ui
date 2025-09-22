@@ -365,9 +365,9 @@ QCheckBox { spacing:6px; }
                <property name="geometry">
                 <rect>
                  <x>0</x>
-                 <y>0</y>
-                 <width>280</width>
-                 <height>451</height>
+                 <y>-240</y>
+                 <width>288</width>
+                 <height>508</height>
                 </rect>
                </property>
                <layout class="QHBoxLayout" name="horizontalLayout_4">

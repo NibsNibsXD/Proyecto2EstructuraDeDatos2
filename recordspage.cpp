@@ -49,6 +49,7 @@
 #include <QActionGroup>
 #include <QCursor>
 #include <QSet>
+#include <QInputDialog>
 
 
 static QString cleanNumericText(QString s) {
@@ -1510,7 +1511,11 @@ void RecordsPage::aplicarFiltroBusqueda(const QString& term)
         bool show = filaCoincideBusqueda(r, term);
         ui->twRegistros->setRowHidden(r, !show);
     }
+
+    // Actualizar label de estado
+    updateFilterStatus(term);
 }
+
 
 /* =================== Diálogo CRUD (toolbar oculto) =================== */
 void RecordsPage::onInsertar() {}
@@ -1803,111 +1808,102 @@ void RecordsPage::clearSorting()
 }
 
 
+void RecordsPage::updateFilterStatus(const QString &filterText)
+{
+    QLabel *lbl = this->ui->lblEstado;
+    if (!lbl) return;
+
+    if (filterText.isEmpty()) {
+        lbl->setText(tr("No Filter"));
+        lbl->setStyleSheet("color: #555; font-weight: normal;");
+    } else {
+        lbl->setText(tr("Filter: %1").arg(filterText));
+        lbl->setStyleSheet("color: #c00; font-weight: bold;");
+    }
+}
+
 
 // ================== FILTRO ==================
 void RecordsPage::showFilterMenu()
 {
     int col = ui->twRegistros->currentColumn();
-    if (col < 0) return;
+    int row = ui->twRegistros->currentRow();
+    if (col < 0 || row < 0) return;
 
-    QSet<QString> values;
-    bool hasBlank = false;
+    auto *it = ui->twRegistros->item(row, col);
+    if (!it) return;
 
-    for (int r = 0; r < ui->twRegistros->rowCount()-1; ++r) {
-        auto *it = ui->twRegistros->item(r, col);
-        QString txt = (it ? it->text().trimmed() : "");
-        if (txt.isEmpty()) {
-            hasBlank = true;
-        } else {
-            values.insert(txt);
-        }
-    }
+    QString valText = it->text().trimmed();
+    if (valText.isEmpty()) return;
 
-    // Crear menú
+    // --- Menú de condiciones basado en el valor seleccionado ---
     QMenu menu(this);
 
-    // 🔹 Aplica un estilo más moderno
-    menu.setStyleSheet(R"(
-        QMenu {
-            background-color: #fefefe;
-            border: 1px solid #aaa;
-            padding: 4px;
-        }
-        QMenu::item {
-            padding: 4px 24px 4px 24px;
-        }
-        QMenu::item:selected {
-            background-color: #0078d7;
-            color: white;
-        }
-        QMenu::indicator {
-            width: 16px;
-            height: 16px;
-        }
-    )");
-
-    QActionGroup* group = new QActionGroup(&menu);
-    group->setExclusive(true);
-
-    // Opción "All"
-    QAction* actAll = menu.addAction("All");
-    actAll->setCheckable(true);
-    group->addAction(actAll);
-
-    QAction* actBlanks = nullptr;
-    if (hasBlank) {
-        actBlanks = menu.addAction("Blanks");
-        actBlanks->setCheckable(true);
-        group->addAction(actBlanks);
-    }
-
-    // Opciones con valores únicos
-    QList<QAction*> acts;
-    for (const QString& v : values) {
-        QAction* act = menu.addAction(v);
-        act->setCheckable(true);
-        group->addAction(act);
-        acts << act;
-    }
-
-    // 🔹 Restaurar el último filtro aplicado (si lo guardás en una variable)
-    // Ejemplo: supongamos que guardás en m_lastFilter[col]
-    if (!m_lastFilterValue.isEmpty()) {
-        for (QAction* act : menu.actions()) {
-            if (act->text() == m_lastFilterValue) {
-                act->setChecked(true);
-                break;
-            }
-        }
-    } else {
-        actAll->setChecked(true);
-    }
+    QAction* actEq = menu.addAction(tr("Igual a %1").arg(valText));
+    QAction* actNe = menu.addAction(tr("No es igual a %1").arg(valText));
+    QAction* actLe = menu.addAction(tr("Menor o igual que %1").arg(valText));
+    QAction* actGe = menu.addAction(tr("Mayor o igual que %1").arg(valText));
+    QAction* actBt = menu.addAction(tr("Entre..."));
 
     QAction* chosen = menu.exec(QCursor::pos());
     if (!chosen) return;
 
-    // Guardar la última opción elegida
-    m_lastFilterValue = chosen->text();
+    // Convertir a número si aplica
+    bool okNum=false;
+    double val = valText.toDouble(&okNum);
 
-    // aplicar filtro
-    if (chosen == actAll) {
-        for (int r = 0; r < ui->twRegistros->rowCount(); ++r)
-            ui->twRegistros->setRowHidden(r, false);
-    } else if (actBlanks && chosen == actBlanks) {
-        for (int r = 0; r < ui->twRegistros->rowCount(); ++r) {
-            auto *it = ui->twRegistros->item(r, col);
-            bool blank = (!it || it->text().trimmed().isEmpty());
-            ui->twRegistros->setRowHidden(r, !blank);
-        }
-    } else {
-        QString val = chosen->text();
-        for (int r = 0; r < ui->twRegistros->rowCount(); ++r) {
-            auto *it = ui->twRegistros->item(r, col);
-            bool match = (it && it->text().trimmed() == val);
+    if (chosen == actEq) {
+        for (int r=0; r<ui->twRegistros->rowCount(); ++r) {
+            auto *it2 = ui->twRegistros->item(r, col);
+            bool match = (it2 && it2->text().trimmed() == valText);
             ui->twRegistros->setRowHidden(r, !match);
+        }
+        updateFilterStatus(QString("%1 = %2").arg(ui->twRegistros->horizontalHeaderItem(col)->text(), valText));
+    }
+    else if (chosen == actNe) {
+        for (int r=0; r<ui->twRegistros->rowCount(); ++r) {
+            auto *it2 = ui->twRegistros->item(r, col);
+            bool match = !(it2 && it2->text().trimmed() == valText);
+            ui->twRegistros->setRowHidden(r, !match);
+        }
+        updateFilterStatus(QString("%1 ≠ %2").arg(ui->twRegistros->horizontalHeaderItem(col)->text(), valText));
+    }
+    else if (okNum && chosen == actLe) {
+        for (int r=0; r<ui->twRegistros->rowCount(); ++r) {
+            auto *it2 = ui->twRegistros->item(r, col);
+            double v2 = it2 ? it2->text().toDouble() : 0;
+            bool match = (v2 <= val);
+            ui->twRegistros->setRowHidden(r, !match);
+        }
+        updateFilterStatus(QString("%1 ≤ %2").arg(ui->twRegistros->horizontalHeaderItem(col)->text()).arg(val));
+    }
+    else if (okNum && chosen == actGe) {
+        for (int r=0; r<ui->twRegistros->rowCount(); ++r) {
+            auto *it2 = ui->twRegistros->item(r, col);
+            double v2 = it2 ? it2->text().toDouble() : 0;
+            bool match = (v2 >= val);
+            ui->twRegistros->setRowHidden(r, !match);
+        }
+        updateFilterStatus(QString("%1 ≥ %2").arg(ui->twRegistros->horizontalHeaderItem(col)->text()).arg(val));
+    }
+    else if (okNum && chosen == actBt) {
+        bool ok1=false, ok2=false;
+        double min = QInputDialog::getDouble(this, tr("Filtro entre..."), tr("Mínimo:"), val, -1e9, 1e9, 2, &ok1);
+        double max = QInputDialog::getDouble(this, tr("Filtro entre..."), tr("Máximo:"), val, -1e9, 1e9, 2, &ok2);
+        if (ok1 && ok2) {
+            for (int r=0; r<ui->twRegistros->rowCount(); ++r) {
+                auto *it2 = ui->twRegistros->item(r, col);
+                double v2 = it2 ? it2->text().toDouble() : 0;
+                bool match = (v2 >= min && v2 <= max);
+                ui->twRegistros->setRowHidden(r, !match);
+            }
+            updateFilterStatus(QString("%1 entre %2 y %3")
+                                   .arg(ui->twRegistros->horizontalHeaderItem(col)->text()).arg(min).arg(max));
         }
     }
 }
+
+
 
 
 
