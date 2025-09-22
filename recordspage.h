@@ -38,8 +38,6 @@ public slots:
     void sortAscending();
     void sortDescending();
     void clearSorting();
-    void showFilterMenu(); // abre menú de filtro
-
 
 private slots:
     // Encabezado / acciones
@@ -114,24 +112,6 @@ private:
     void selectVisibleByIndex(int visIndex);
     int  m_lastSortColumn = -1;
     int  currentSortColumn() const;
-
-    // --- Sorting (vista -> modelo) ---
-    bool m_sortActive = false;
-    int  m_sortCol = -1;
-    Qt::SortOrder m_sortOrder = Qt::AscendingOrder;
-    QVector<int>  m_rowOrder;                // índice de fila en vista -> índice en DataModel
-
-    int  modelRowForView(int viewRow) const; // helper
-    void recomputeRowOrder();                // recalcula m_rowOrder con el DataModel actual
-
-
-    // --- Filtering ---
-    QMap<int, QSet<QString>> m_activeFilters; // columna -> conjunto de valores permitidos especiales ("__BLANK__")
-    bool rowPassesFilters(int modelRow) const;
-    void applyActiveFilters();
-
-
-
 
     // --- Nueva fila editable tipo Access ---
     void addNewRowEditors(qint64 presetId = -1);

@@ -28,13 +28,6 @@
 #include <QSet>
 #include <QDebug>
 #include <QStyledItemDelegate>
-#include <QCollator>   // comparador locale-aware para texto
-#include <QMenu>
-#include <QAction>
-#include <QActionGroup>
-
-
-
 
 
 
@@ -136,8 +129,7 @@ void RecordsPage::setTableFromFieldDefs(const QString& name, const Schema& defs)
 
     // Refrescar al vuelo si cambian filas en el modelo
     m_rowsConn = connect(&DataModel::instance(), &DataModel::rowsChanged, this,
-                         [this](const QString& t){ if (t == m_tableName) reloadRows(); },
-                         Qt::QueuedConnection);
+                         [this](const QString& t){ if (t == m_tableName) reloadRows(); });
 
     setMode(Mode::Idle);
     updateStatusLabels();
@@ -179,13 +171,7 @@ void RecordsPage::reloadRows()
 {
     if (m_tableName.isEmpty() || m_schema.isEmpty()) return;
 
-    // Evitar reentradas si rowsChanged nos llama en medio de una recarga
-    static bool s_inReload = false;
-    if (s_inReload || m_isReloading) return;
-    s_inReload = true;
     m_isReloading = true;
-
-
 
     // 1) Si hubiera un editor inline activo, elimínalo con seguridad
     if (QWidget *ed = ui->twRegistros->viewport()->findChild<QWidget*>(
@@ -200,10 +186,6 @@ void RecordsPage::reloadRows()
     ui->twRegistros->setSortingEnabled(false);
 
     const auto& rowsData = DataModel::instance().rows(m_tableName);
-    // Si hay orden activo, recalculamos el mapeo vista->modelo
-    if (m_sortActive) recomputeRowOrder();
-    else              m_rowOrder.clear();
-
 
     // 3) Preservar selección actual
     int prevSelRow = -1, prevSelCol = -1;
@@ -220,8 +202,7 @@ void RecordsPage::reloadRows()
         ui->twRegistros->setRowCount(0);
 
         for (int r = 0; r < rowsData.size(); ++r) {
-            const int modelRow = m_sortActive ? m_rowOrder[r] : r;
-            const Record& rec = rowsData[modelRow];
+            const Record& rec = rowsData[r];
             ui->twRegistros->insertRow(r);
 
             for (int c = 0; c < m_schema.size(); ++c) {
@@ -239,15 +220,12 @@ void RecordsPage::reloadRows()
                     hl->addStretch(1);
                     ui->twRegistros->setCellWidget(r, c, wrap);
 
-                    const int viewRow       = r;
-                    const int modelRowFixed = modelRow; // captura por valor
-
-                    connect(cb, &QCheckBox::checkStateChanged, this, [this, viewRow, modelRowFixed](int){
+                    connect(cb, &QCheckBox::checkStateChanged, this, [this, r](int){
                         if (m_isReloading || m_isCommitting) return;
-                        Record rowRec = rowToRecord(viewRow);  // lee la fila visible
+                        Record rowRec = rowToRecord(r);
                         QString err;
                         if (!DataModel::instance().validate(m_schema, rowRec, &err)) { reloadRows(); return; }
-                        DataModel::instance().updateRow(m_tableName, modelRowFixed, rowRec, &err);
+                        DataModel::instance().updateRow(m_tableName, r, rowRec, &err);
                     });
                 } else {
                     auto *it = new QTableWidgetItem(formatCell(fd, vv));
@@ -312,8 +290,6 @@ void RecordsPage::reloadRows()
     updateNavState();
 
     m_isReloading = false;
-    s_inReload = false;
-
 }
 
 
@@ -506,13 +482,11 @@ void RecordsPage::commitNewRow()
 
 
     m_preparedNextNew = false;
+    reloadRows();                                   // seguro ahora
+    const int rows = ui->twRegistros->rowCount();
+    if (rows >= 2) ui->twRegistros->setCurrentCell(rows - 2, 0);
 
-    // Opción A (recomendada): deja que rowsChanged llame reloadRows() encolado
-    // Opción B: forzar recarga encolada tú mismo:
-    QMetaObject::invokeMethod(this, [this]{ reloadRows(); }, Qt::QueuedConnection);
-
-    m_isCommitting = false;
-                           // ← NUEVO
+    m_isCommitting = false;                         // ← NUEVO
 }
 
 
@@ -780,131 +754,6 @@ Record RecordsPage::rowToRecord(int row) const
     return rec;
 }
 
-int RecordsPage::modelRowForView(int viewRow) const {
-    if (!m_sortActive) return viewRow;
-    if (viewRow < 0 || viewRow >= m_rowOrder.size()) return viewRow;
-    return m_rowOrder[viewRow];
-}
-
-void RecordsPage::recomputeRowOrder()
-{
-    m_rowOrder.clear();
-
-    if (!m_sortActive || m_sortCol < 0 || m_sortCol >= m_schema.size())
-        return;
-
-    const auto& rows = DataModel::instance().rows(m_tableName);
-    const int n = rows.size();
-    if (n <= 1) return;
-
-    m_rowOrder.resize(n);
-    for (int i = 0; i < n; ++i) m_rowOrder[i] = i;
-
-    const FieldDef& fd = m_schema[m_sortCol];
-    const QString   t  = normType(fd.type);
-
-    QCollator coll;
-    coll.setCaseSensitivity(Qt::CaseInsensitive);
-    coll.setNumericMode(true);
-
-    auto isBlank = [&](int mr)->bool {
-        const QVariant v = (m_sortCol < rows[mr].size() ? rows[mr][m_sortCol] : QVariant());
-        if (!v.isValid() || v.isNull()) return true;
-        if (t == "texto" || t == "texto_largo" || t == "autonumeracion")
-            return v.toString().trimmed().isEmpty();
-        if (t == "fecha_hora")
-            return !(v.canConvert<QDate>() && v.toDate().isValid());
-        if (t == "moneda" || t == "numero") {
-            bool ok=false; (void)v.toDouble(&ok); return !ok;
-        }
-        if (t == "booleano")
-            return !v.isValid(); // raro, pero por consistencia
-        return false;
-    };
-
-    auto lessAsc = [&](int a, int b)->bool {
-        const bool ba = isBlank(a), bb = isBlank(b);
-        if (ba != bb) return ba;               // blanks siempre primero
-        if (ba && bb) return a < b;            // estable
-
-        const QVariant va = (m_sortCol < rows[a].size() ? rows[a][m_sortCol] : QVariant());
-        const QVariant vb = (m_sortCol < rows[b].size() ? rows[b][m_sortCol] : QVariant());
-
-        if (t == "numero" || t == "moneda" || t == "autonumeracion") {
-            const double da = va.toDouble(), db = vb.toDouble();
-            if (da < db) return true;  if (da > db) return false;  return a < b;
-        }
-        if (t == "fecha_hora") {
-            const QDate da = va.toDate(), db = vb.toDate();
-            if (da < db) return true;  if (da > db) return false;  return a < b;
-        }
-        if (t == "booleano") {
-            // ASC: true primero (rank 0) luego false (rank 1)
-            const int ra = (va.toBool() ? 0 : 1);
-            const int rb = (vb.toBool() ? 0 : 1);
-            if (ra < rb) return true;  if (ra > rb) return false;  return a < b;
-        }
-        // texto / texto_largo
-        const int cmp = coll.compare(va.toString(), vb.toString());
-        if (cmp < 0) return true; if (cmp > 0) return false; return a < b;
-    };
-
-    std::stable_sort(m_rowOrder.begin(), m_rowOrder.end(), [&](int a, int b){
-        if (m_sortOrder == Qt::AscendingOrder) return lessAsc(a,b);
-        // DESC = inverso de ASC pero manteniendo blanks primero
-        const bool ba = isBlank(a), bb = isBlank(b);
-        if (ba != bb) return ba;     // blanks primero en ambos sentidos
-        if (ba && bb) return a < b;  // estable
-        return !lessAsc(a,b);
-    });
-}
-
-bool RecordsPage::rowPassesFilters(int modelRow) const
-{
-    if (m_activeFilters.isEmpty()) return true;
-    const auto& rows = DataModel::instance().rows(m_tableName);
-
-    for (auto it = m_activeFilters.constBegin(); it != m_activeFilters.constEnd(); ++it) {
-        int col = it.key();
-        const auto& allowed = it.value();
-        if (col < 0 || col >= m_schema.size()) continue;
-        if (col < 0 || col >= rows[modelRow].size()) continue;
-
-        const QVariant v = rows[modelRow][col];
-        QString val;
-        if (!v.isValid() || v.isNull() || v.toString().trimmed().isEmpty()) {
-            val = "__BLANK__";
-        } else if (normType(m_schema[col].type) == "booleano") {
-            val = v.toBool() ? "Yes" : "No";
-        } else if (normType(m_schema[col].type) == "fecha_hora") {
-            val = v.toDate().toString("yyyy-MM-dd");
-        } else if (normType(m_schema[col].type) == "moneda") {
-            val = QString::number(v.toDouble(), 'f', 2);
-        } else {
-            val = v.toString();
-        }
-        if (!allowed.contains(val) && !allowed.contains("ALL"))
-            return false;
-    }
-    return true;
-}
-
-void RecordsPage::applyActiveFilters()
-{
-    const auto& rows = DataModel::instance().rows(m_tableName);
-    for (int viewRow = 0; viewRow < ui->twRegistros->rowCount(); ++viewRow) {
-        if (viewRow == ui->twRegistros->rowCount() - 1) {
-            // la fila (New) siempre visible
-            ui->twRegistros->setRowHidden(viewRow, false);
-            continue;
-        }
-        int modelRow = modelRowForView(viewRow);
-        bool show = rowPassesFilters(modelRow);
-        ui->twRegistros->setRowHidden(viewRow, !show);
-    }
-}
-
-
 void RecordsPage::onItemChanged(QTableWidgetItem* it)
 {
     if (!it || m_tableName.isEmpty() || m_schema.isEmpty()) return;
@@ -918,23 +767,22 @@ void RecordsPage::onItemChanged(QTableWidgetItem* it)
     if (row == last) return;
     if (normType(m_schema[col].type) == "autonumeracion") return;
 
-    // Toma los valores correctamente tipados de toda la fila (vista)
+    // Toma los valores correctamente tipados de toda la fila
     Record r = rowToRecord(row);
 
+    // Intenta actualizar en el modelo (aquí se validan tipos, PK, y FKs)
     QString err;
-    const int modelRow = modelRowForView(row);   // <-- map vista -> modelo
-
-    if (!DataModel::instance().updateRow(m_tableName, modelRow, r, &err)) {
+    if (!DataModel::instance().updateRow(m_tableName, row, r, &err)) {
         // Revertir solo la celda editada SIN disparar signals
         QSignalBlocker block(ui->twRegistros);
 
         const auto rows = DataModel::instance().rows(m_tableName);
-        if (modelRow >= 0 && modelRow < rows.size() && col < rows[modelRow].size()) {
+        if (row >= 0 && row < rows.size() && col < rows[row].size()) {
             const FieldDef& fd = m_schema[col];
-            const QVariant& vv = rows[modelRow][col];
+            const QVariant& vv = rows[row][col];
             if (auto *item = ui->twRegistros->item(row, col)) {
                 item->setText(formatCell(fd, vv));
-                // (opcional) marca en rojo un instante
+                // (opcional) marcar en rojo un instante
                 item->setBackground(QColor("#ffe0e0"));
                 QTimer::singleShot(650, this, [this,row,col](){
                     if (auto *it2 = ui->twRegistros->item(row,col))
@@ -953,86 +801,6 @@ void RecordsPage::onItemChanged(QTableWidgetItem* it)
 }
 
 
-void RecordsPage::showFilterMenu()
-{
-    int col = currentSortColumn();
-    if (col < 0 || col >= m_schema.size()) return;
-
-    const auto& rows = DataModel::instance().rows(m_tableName);
-    QSet<QString> values;
-    bool hasBlank = false;
-
-    // recolectar valores únicos
-    for (int r = 0; r < rows.size(); ++r) {
-        const QVariant v = (col < rows[r].size() ? rows[r][col] : QVariant());
-        QString val;
-        if (!v.isValid() || v.isNull() || v.toString().trimmed().isEmpty()) {
-            hasBlank = true;
-            val = "__BLANK__";
-        } else if (normType(m_schema[col].type) == "booleano") {
-            val = v.toBool() ? "Yes" : "No";
-        } else if (normType(m_schema[col].type) == "fecha_hora") {
-            val = v.toDate().toString("yyyy-MM-dd");
-        } else if (normType(m_schema[col].type) == "moneda") {
-            val = QString::number(v.toDouble(), 'f', 2);
-        } else {
-            val = v.toString();
-        }
-        values.insert(val);
-    }
-
-    // construir menú
-    QMenu menu(this);
-    QActionGroup group(&menu);
-    group.setExclusive(true);  // 🔑 solo una opción activa
-
-    // opción "All"
-    QAction* actAll = menu.addAction("All");
-    actAll->setCheckable(true);
-    actAll->setChecked(!m_activeFilters.contains(col));
-    group.addAction(actAll);
-
-    // opción "Blanks"
-    QAction* actBlanks = nullptr;
-    if (hasBlank) {
-        actBlanks = menu.addAction("Blanks");
-        actBlanks->setCheckable(true);
-        actBlanks->setChecked(m_activeFilters.value(col).contains("__BLANK__"));
-        group.addAction(actBlanks);
-    }
-
-    // valores únicos
-    QList<QAction*> valueActs;
-    for (const QString& v : values) {
-        if (v == "__BLANK__") continue;
-        QAction* a = menu.addAction(v);
-        a->setCheckable(true);
-        a->setChecked(m_activeFilters.value(col).contains(v));
-        group.addAction(a);
-        valueActs << a;
-    }
-
-    // abrir menú (modo bloqueante, elegís uno)
-    QAction* chosen = menu.exec(QCursor::pos());
-    if (!chosen) return;
-
-    // guardar selección
-    QSet<QString> newSet;
-    if (chosen == actAll) {
-        m_activeFilters.remove(col);
-    } else if (chosen == actBlanks) {
-        newSet.insert("__BLANK__");
-        m_activeFilters[col] = newSet;
-    } else if (valueActs.contains(chosen)) {
-        newSet.insert(chosen->text());
-        m_activeFilters[col] = newSet;
-    }
-
-    applyActiveFilters();
-}
-
-
-
 
 
 /* =================== Slots legacy expuestos =================== */
@@ -1042,37 +810,9 @@ void RecordsPage::onAnterior() { int r = ui->twRegistros->currentRow(); if (r > 
 void RecordsPage::onSiguiente(){ int r = ui->twRegistros->currentRow(); int last = ui->twRegistros->rowCount() - 1; if (r >= 0 && r < last) ui->twRegistros->selectRow(r + 1); }
 void RecordsPage::onUltimo()   { int last = ui->twRegistros->rowCount() - 1; if (last >= 0) ui->twRegistros->selectRow(last); }
 
-void RecordsPage::sortAscending()
-{
-    if (m_schema.isEmpty()) return;
-    const int col = currentSortColumn();
-    if (col < 0 || col >= m_schema.size()) return;
-    m_sortActive = true;
-    m_sortCol    = col;
-    m_sortOrder  = Qt::AscendingOrder;
-    reloadRows();
-}
-
-void RecordsPage::sortDescending()
-{
-    if (m_schema.isEmpty()) return;
-    const int col = currentSortColumn();
-    if (col < 0 || col >= m_schema.size()) return;
-    m_sortActive = true;
-    m_sortCol    = col;
-    m_sortOrder  = Qt::DescendingOrder;
-    reloadRows();
-}
-
-void RecordsPage::clearSorting()
-{
-    if (!m_sortActive) return;
-    m_sortActive = false;
-    m_sortCol    = -1;
-    m_rowOrder.clear();
-    reloadRows();
-}
-
+void RecordsPage::sortAscending()  {}
+void RecordsPage::sortDescending() {}
+void RecordsPage::clearSorting()   {}
 
 
 void RecordsPage::onLimpiarFormulario() { limpiarFormulario(); }
