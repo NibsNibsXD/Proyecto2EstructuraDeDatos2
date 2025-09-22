@@ -43,6 +43,13 @@
 #include <QCoreApplication>
 #include <QToolTip>
 #include <QTimer>
+#include <QMenu>
+#include <QMenu>
+#include <QAction>
+#include <QActionGroup>
+#include <QCursor>
+#include <QSet>
+
 
 static QString cleanNumericText(QString s) {
     s = s.trimmed();
@@ -1760,9 +1767,149 @@ void RecordsPage::onAnterior() { int r = ui->twRegistros->currentRow(); if (r > 
 void RecordsPage::onSiguiente(){ int r = ui->twRegistros->currentRow(); int last = ui->twRegistros->rowCount() - 1; if (r >= 0 && r < last) ui->twRegistros->selectRow(r + 1); }
 void RecordsPage::onUltimo()   { int last = ui->twRegistros->rowCount() - 1; if (last >= 0) ui->twRegistros->selectRow(last); }
 
-void RecordsPage::sortAscending()  {}
-void RecordsPage::sortDescending() {}
-void RecordsPage::clearSorting()   {}
+// ================== ORDENAMIENTO ==================
+void RecordsPage::sortAscending()
+{
+    int col = ui->twRegistros->currentColumn();
+    if (col < 0) return;
+    ui->twRegistros->sortItems(col, Qt::AscendingOrder);
+}
+
+void RecordsPage::sortDescending()
+{
+    int col = ui->twRegistros->currentColumn();
+    if (col < 0) return;
+    ui->twRegistros->sortItems(col, Qt::DescendingOrder);
+}
+
+void RecordsPage::clearSorting()
+{
+    // --- Limpiar ordenamiento ---
+    ui->twRegistros->setSortingEnabled(false);
+    ui->twRegistros->setSortingEnabled(true);
+
+    // --- Limpiar texto de búsqueda ---
+    if (!ui->leBuscar->text().isEmpty()) {
+        ui->leBuscar->clear();   // esto dispara aplicarFiltroBusqueda("") y muestra todo
+    } else {
+        // --- Si no hay búsqueda activa, mostrar todas las filas ---
+        for (int r = 0; r < ui->twRegistros->rowCount(); ++r) {
+            ui->twRegistros->setRowHidden(r, false);
+        }
+    }
+
+    // --- Opcional: recargar para devolver el orden original (por autonum o PK) ---
+    reloadRows();
+}
+
+
+
+// ================== FILTRO ==================
+void RecordsPage::showFilterMenu()
+{
+    int col = ui->twRegistros->currentColumn();
+    if (col < 0) return;
+
+    QSet<QString> values;
+    bool hasBlank = false;
+
+    for (int r = 0; r < ui->twRegistros->rowCount()-1; ++r) {
+        auto *it = ui->twRegistros->item(r, col);
+        QString txt = (it ? it->text().trimmed() : "");
+        if (txt.isEmpty()) {
+            hasBlank = true;
+        } else {
+            values.insert(txt);
+        }
+    }
+
+    // Crear menú
+    QMenu menu(this);
+
+    // 🔹 Aplica un estilo más moderno
+    menu.setStyleSheet(R"(
+        QMenu {
+            background-color: #fefefe;
+            border: 1px solid #aaa;
+            padding: 4px;
+        }
+        QMenu::item {
+            padding: 4px 24px 4px 24px;
+        }
+        QMenu::item:selected {
+            background-color: #0078d7;
+            color: white;
+        }
+        QMenu::indicator {
+            width: 16px;
+            height: 16px;
+        }
+    )");
+
+    QActionGroup* group = new QActionGroup(&menu);
+    group->setExclusive(true);
+
+    // Opción "All"
+    QAction* actAll = menu.addAction("All");
+    actAll->setCheckable(true);
+    group->addAction(actAll);
+
+    QAction* actBlanks = nullptr;
+    if (hasBlank) {
+        actBlanks = menu.addAction("Blanks");
+        actBlanks->setCheckable(true);
+        group->addAction(actBlanks);
+    }
+
+    // Opciones con valores únicos
+    QList<QAction*> acts;
+    for (const QString& v : values) {
+        QAction* act = menu.addAction(v);
+        act->setCheckable(true);
+        group->addAction(act);
+        acts << act;
+    }
+
+    // 🔹 Restaurar el último filtro aplicado (si lo guardás en una variable)
+    // Ejemplo: supongamos que guardás en m_lastFilter[col]
+    if (!m_lastFilterValue.isEmpty()) {
+        for (QAction* act : menu.actions()) {
+            if (act->text() == m_lastFilterValue) {
+                act->setChecked(true);
+                break;
+            }
+        }
+    } else {
+        actAll->setChecked(true);
+    }
+
+    QAction* chosen = menu.exec(QCursor::pos());
+    if (!chosen) return;
+
+    // Guardar la última opción elegida
+    m_lastFilterValue = chosen->text();
+
+    // aplicar filtro
+    if (chosen == actAll) {
+        for (int r = 0; r < ui->twRegistros->rowCount(); ++r)
+            ui->twRegistros->setRowHidden(r, false);
+    } else if (actBlanks && chosen == actBlanks) {
+        for (int r = 0; r < ui->twRegistros->rowCount(); ++r) {
+            auto *it = ui->twRegistros->item(r, col);
+            bool blank = (!it || it->text().trimmed().isEmpty());
+            ui->twRegistros->setRowHidden(r, !blank);
+        }
+    } else {
+        QString val = chosen->text();
+        for (int r = 0; r < ui->twRegistros->rowCount(); ++r) {
+            auto *it = ui->twRegistros->item(r, col);
+            bool match = (it && it->text().trimmed() == val);
+            ui->twRegistros->setRowHidden(r, !match);
+        }
+    }
+}
+
+
 
 void RecordsPage::onLimpiarFormulario() { limpiarFormulario(); }
 void RecordsPage::onGenerarDummyFila()  {}
@@ -2038,3 +2185,4 @@ void RecordsPage::onEliminarSeleccion()
         ui->twRegistros->selectRow(keep);
     });
 }
+

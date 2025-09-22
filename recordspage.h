@@ -46,6 +46,8 @@ public slots:
     void sortAscending();
     void sortDescending();
     void clearSorting();
+    void showFilterMenu();
+
 
     const Schema& schema() const;
     QTableWidget* sheet() const;
@@ -90,6 +92,7 @@ private:
 
 
 
+    QString m_lastFilterValue;
 
 
     // Mapea fila visible (vista) -> fila real en DataModel

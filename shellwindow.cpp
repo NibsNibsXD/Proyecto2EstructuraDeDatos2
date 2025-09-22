@@ -1630,6 +1630,8 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
                 connect(b, &QToolButton::clicked, recordsPage, &RecordsPage::sortDescending);
             } else if (t.compare("Clear", Qt::CaseInsensitive) == 0) {
                 connect(b, &QToolButton::clicked, recordsPage, &RecordsPage::clearSorting);
+            } else if (t.compare("Filter", Qt::CaseInsensitive) == 0) {
+                connect(b, &QToolButton::clicked, recordsPage, &RecordsPage::showFilterMenu);
             }
 
             // "Save" se deja como placeholder (no aplica en el flujo actual)
