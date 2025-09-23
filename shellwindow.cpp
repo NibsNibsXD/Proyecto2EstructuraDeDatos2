@@ -217,13 +217,47 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
     root->addWidget(bb);
 
     // ===== helpers =====
-    auto normType = [](QString t){
+    auto normType = [](QString t) -> QString {
+        // normaliza a minúsculas y quita espacios
         t = t.toLower().trimmed();
-        if (t.contains("auto")) return QString("number");
-        if (t.contains("entero") || t.contains("number")) return QString("number");
-        if (t.contains("fecha")  || t.contains("hora"))   return QString("datetime");
-        if (t.contains("texto")  || t.contains("char"))   return QString("text");
-        if (t.contains("bool"))  return QString("bool");
+
+        // quitar acentos y unificar variantes comunes
+        t.replace(QChar(u'á'), QChar(u'a'));
+        t.replace(QChar(u'é'), QChar(u'e'));
+        t.replace(QChar(u'í'), QChar(u'i'));
+        t.replace(QChar(u'ó'), QChar(u'o'));
+        t.replace(QChar(u'ú'), QChar(u'u'));
+
+        // unificar "sí/no" -> "si/no"
+        t.replace("sí/no", "si/no");
+
+        // --- números enteros (PK/FK típicos) ---
+        // Considera "autonumeracion" como entero para fines de compatibilidad
+        if (t.contains("auto")) return "integer";  // autonumeracion / auto number
+        if (t.contains("long integer") ||
+            t.contains("entero") ||
+            t.contains("integer") ||
+            t.contains("numero")  ||   // "número"/"numero"
+            t.contains("number"))
+            return "integer";
+
+        // --- reales/decimales ---
+        if (t.contains("real") || t.contains("double") || t.contains("decimal") || t.contains("float"))
+            return "real";
+
+        // --- fechas/horas ---
+        if (t.contains("fecha") || t.contains("hora") || t.contains("date") || t.contains("time"))
+            return "datetime";
+
+        // --- booleanos ---
+        if (t.contains("bool") || t.contains("si/no"))
+            return "bool";
+
+        // --- textos ---
+        if (t.contains("texto") || t.contains("text") || t.contains("char") || t.contains("varchar"))
+            return "text";
+
+        // por defecto, deja el literal tal cual
         return t;
     };
 

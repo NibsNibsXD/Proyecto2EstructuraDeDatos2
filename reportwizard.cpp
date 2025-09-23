@@ -12,6 +12,9 @@
 #include <QLineEdit>
 #include <QCheckBox>
 #include <QMessageBox>
+#include <QDialog>
+#include <QFormLayout>
+#include <QDialogButtonBox>
 
 static QTableWidget* makeGrid(int cols, const QStringList& headers) {
     auto *t = new QTableWidget(0, cols);
@@ -254,12 +257,61 @@ void ReportWizard::refreshTablesAndQueries() {
 }
 
 void ReportWizard::addExtraSource() {
-    // Diálogo mínimo inline: elegimos tipo+valor y lo agregamos a lista
     auto& dm = DataModel::instance();
-    QString label = "table:";
-    if (!dm.tables().isEmpty()) label += dm.tables().first();
+
+    QDialog dlg(this);
+    dlg.setWindowTitle("Agregar fuente extra");
+    auto *root = new QVBoxLayout(&dlg);
+
+    auto *form = new QFormLayout;
+    auto *cbType = new QComboBox;
+    cbType->addItems({"Table","Query","SQL"});
+
+    auto *cbName = new QComboBox;
+    cbName->setEditable(true); // solo SQL quedará editable; tablas/queries no
+
+    form->addRow("Tipo:", cbType);
+    form->addRow("Nombre/SQL:", cbName);
+    root->addLayout(form);
+
+    auto refill = [&, cbType, cbName]() {
+        cbName->clear();
+        if (cbType->currentIndex() == 0) {              // Table
+            for (const auto& t : dm.tables()) cbName->addItem(t);
+            cbName->setEditable(false);
+        } else if (cbType->currentIndex() == 1) {       // Query
+            for (const auto& q : dm.queries()) cbName->addItem(q);
+            cbName->setEditable(false);
+        } else {                                        // SQL
+            cbName->setEditable(true);
+        }
+    };
+    refill();
+    QObject::connect(cbType, qOverload<int>(&QComboBox::currentIndexChanged),
+                     &dlg, [=](int){ refill(); });
+
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    root->addWidget(bb);
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const QString val = cbName->currentText().trimmed();
+    if (val.isEmpty()) return;
+
+    QString label;
+    if (cbType->currentIndex() == 0)      label = "table:" + val;
+    else if (cbType->currentIndex() == 1) label = "query:" + val;
+    else                                  label = "sql:"   + val;
+
+    // Evitar duplicados exactos
+    for (int i = 0; i < listExtras_->count(); ++i) {
+        if (listExtras_->item(i)->text() == label) return;
+    }
     listExtras_->addItem(label);
 }
+
 
 void ReportWizard::addJoinRow() {
     int r = tblJoins_->rowCount(); tblJoins_->insertRow(r);
