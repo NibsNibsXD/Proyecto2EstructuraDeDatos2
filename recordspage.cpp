@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <QTimer>
 #include <QLocale>
+#include <QPointer>
 #include <QSet>
 #include <QDebug>
 #include <QStyledItemDelegate>
@@ -280,6 +281,116 @@ public:
                           const QStyleOptionViewItem &,
                           const QModelIndex &idx) const override
     {
+
+        // ⛔ Si la celda ACTUAL es REQUERIDO (no autonum) y está vacía,
+        // no permitir abrir editor en OTRA celda (igual que PK).
+        if (m_owner && idx.isValid()) {
+            QTableWidget* view = m_owner->sheet();
+            const int curRow = view->currentRow();
+            const int curCol = view->currentColumn();
+
+            if (curRow >= 0 && curCol >= 0) {
+                const Schema& s = m_owner->schema();
+                if (curCol < s.size()) {
+                    const FieldDef& f = s[curCol];
+                    const QString nt  = normType(f.type);
+
+                    auto currentCellText = [&]()->QString {
+                        if (auto *w = view->cellWidget(curRow, curCol))
+                            if (auto *le = qobject_cast<QLineEdit*>(w)) return le->text().trimmed();
+                        if (auto *it = view->item(curRow, curCol)) return it->text().trimmed();
+                        return QString();
+                    };
+
+                    const bool requerido     = (f.requerido && nt != "autonumeracion");
+                    const bool tryingAnother = (idx.row() != curRow) || (idx.column() != curCol);
+
+                    if (requerido && tryingAnother && currentCellText().isEmpty()) {
+                        QSignalBlocker b(view);
+                        view->setCurrentCell(curRow, curCol);
+                        const QModelIndex here = view->model()->index(curRow, curCol);
+                        m_owner->showRequiredPopup(
+                            here,
+                            QObject::tr("El campo \"%1\" es requerido.").arg(f.name),
+                            1800
+                            );
+                        return nullptr; // ← NO crear editor en otra celda
+                    }
+                }
+            }
+        }
+
+        // ⛔ No crear editor si la PK MANUAL de ESTA FILA está vacía o duplicada
+        if (m_owner && idx.isValid()) {
+            QTableWidget* view = m_owner->sheet();
+            const Schema& s    = m_owner->schema();
+            const int pk      = DataModel::instance().pkColumn(s);
+
+            if (pk >= 0 && normType(s[pk].type) != "autonumeracion") {
+                const int vrow = idx.row();
+                const bool tryingAnotherCell = (idx.column() != pk);
+
+                // texto de la PK visible en esta fila (prioriza editor abierto)
+                auto pkTextAt = [&](int r)->QString {
+                    if (auto *w = view->cellWidget(r, pk))
+                        if (auto *le = qobject_cast<QLineEdit*>(w)) return le->text().trimmed();
+                    if (auto *it = view->item(r, pk)) return it->text().trimmed();
+
+                    // fallback: del modelo (si es una fila ya existente)
+                    const int dr = m_owner->viewRowToDataRow(r);
+                    if (dr >= 0) {
+                        const auto rows = DataModel::instance().rows(m_owner->tableName());
+                        if (dr < rows.size() && pk < rows[dr].size())
+                            return rows[dr][pk].toString().trimmed();
+                    }
+                    return QString();
+                };
+
+                const QString pkTxt = pkTextAt(vrow);
+                const bool pkEmpty  = pkTxt.isEmpty();
+
+                // ¿Duplicada? (si PK es texto, comparamos case-insensitive)
+                bool pkDup = false;
+                if (!pkEmpty) {
+                    const bool textPk =
+                        (normType(s[pk].type) == "texto" || normType(s[pk].type) == "texto_largo");
+                    const QString key = textPk ? pkTxt.toLower() : pkTxt;
+
+                    const auto rows  = DataModel::instance().rows(m_owner->tableName());
+                    const int drSelf = m_owner->viewRowToDataRow(vrow);
+                    for (int i = 0; i < rows.size(); ++i) {
+                        if (i == drSelf) continue;
+                        const Record& rec = rows[i];
+                        if (rec.isEmpty() || pk >= rec.size()) continue;
+                        const QString other = textPk
+                                                  ? rec[pk].toString().trimmed().toLower()
+                                                  : rec[pk].toString().trimmed();
+                        if (other == key) { pkDup = true; break; }
+                    }
+                }
+
+                if (tryingAnotherCell && (pkEmpty || pkDup)) {
+                    // regresar a la PK y avisar (1 solo popup)
+                    const QModelIndex pix = view->model()->index(vrow, pk);
+
+                    // Si expusiste un helper público refocusCellQueued(row,col), úsalo:
+                    // m_owner->refocusCellQueued(vrow, pk);
+                    // Si no, usa setCurrentCell como fallback:
+                    QSignalBlocker b(view);
+                    view->setCurrentCell(vrow, pk);
+
+                    m_owner->showRequiredPopup(
+                        pix,
+                        pkEmpty ? QObject::tr("La clave primaria es requerida.")
+                                : QObject::tr("La clave primaria no puede tener duplicados."),
+                        1800
+                        );
+                    return nullptr; // ← no se crea editor en otra celda
+                }
+            }
+        }
+
+
 
         // ⛔ No crear editor en la fila NUEVA si la fila anterior tiene requeridos vacíos
         if (m_owner && idx.isValid()) {
@@ -738,6 +849,19 @@ bool RecordsPage::hasUnfilledRequired(QModelIndex* where) const {
         }
     }
     return false;
+}
+
+void RecordsPage::refocusCellQueued(int row, int col)
+{
+    QPointer<QTableWidget> tw = ui->twRegistros;
+    QMetaObject::invokeMethod(this, [this, tw, row, col]{
+        if (!tw) return;
+        QSignalBlocker b(tw);                  // evita reentradas
+        tw->setCurrentCell(row, col);
+        tw->setFocus();
+        if (auto *it = tw->item(row, col))
+            tw->editItem(it);                  // vuelve a abrir el editor si aplica
+    }, Qt::QueuedConnection);
 }
 
 
@@ -1998,6 +2122,36 @@ void RecordsPage::onCurrentCellChanged(int currentRow, int currentCol,
 {
     if (m_isReloading || m_isCommitting) return;
 
+    // --- REQUERIDO (no autonum): si salgo vacío, NO me deja salir (igual que PK manual) ---
+    if (previousRow >= 0 && previousCol >= 0 && !m_schema.isEmpty()) {
+        const FieldDef& fd = m_schema[previousCol];
+        const QString nt  = normType(fd.type);
+        if (fd.requerido && nt != "autonumeracion") {
+            const bool leavingCell = (currentRow != previousRow) || (currentCol != previousCol);
+
+            auto valueAt = [&](int vrow, int vcol)->QString {
+                if (QWidget *w = ui->twRegistros->cellWidget(vrow, vcol))
+                    if (auto *le = qobject_cast<QLineEdit*>(w)) return le->text().trimmed();
+                if (auto *it = ui->twRegistros->item(vrow, vcol)) return it->text().trimmed();
+                const int dr = dataRowForView(vrow);
+                if (dr >= 0) {
+                    const auto rows = DataModel::instance().rows(m_tableName);
+                    if (dr < rows.size() && vcol < rows[dr].size())
+                        return rows[dr][vcol].toString().trimmed();
+                }
+                return QString();
+            };
+
+            if (leavingCell && valueAt(previousRow, previousCol).isEmpty()) {
+                QSignalBlocker blk(ui->twRegistros);
+                ui->twRegistros->setCurrentCell(previousRow, previousCol);
+                const QModelIndex ix = ui->twRegistros->model()->index(previousRow, previousCol);
+                showRequiredPopup(ix, tr("El campo \"%1\" es requerido.").arg(fd.name), 1800);
+                return; // ⬅️ no continuar
+            }
+        }
+    }
+
     // --- PK MANUAL: requerida y sin duplicados ---
     if (previousRow >= 0 && previousCol >= 0 && !m_schema.isEmpty()) {
         const int pk = DataModel::instance().pkColumn(m_schema);
@@ -2025,9 +2179,9 @@ void RecordsPage::onCurrentCellChanged(int currentRow, int currentCol,
                 // 1) Vacía → no dejar salir
                 if (leavingPkCell && emptyPk) {
                     QSignalBlocker blk(ui->twRegistros);
-                    ui->twRegistros->setCurrentCell(previousRow, pk);
+                    refocusCellQueued(previousRow, pk);
                     const QModelIndex ix = ui->twRegistros->model()->index(previousRow, pk);
-                    showCellTip(this, ix, tr("La clave primaria es requerida."), 1800);
+                    showRequiredPopup(ix, tr("La clave primaria es requerida."), 1800);
                     return;
                 }
 
@@ -2046,11 +2200,11 @@ void RecordsPage::onCurrentCellChanged(int currentRow, int currentCol,
 
                     bool dup = false;
                     for (int i = 0; i < rows.size(); ++i) {
-                        if (i == drPrev) continue;
+                        if (i == drPrev) continue;                     // misma fila no cuenta
                         const Record& rec = rows[i];
-                        if (rec.isEmpty() || pk >= rec.size()) continue;
+                        if (rec.isEmpty() || pk >= rec.size()) continue; // tombstone / corto
                         const QVariant& v = rec[pk];
-                        if (!v.isValid() || v.isNull()) continue;
+                        if (!v.isValid() || v.isNull()) continue;      // ignora vacíos de otras filas
                         const QString k = textPk
                                               ? v.toString().trimmed().toLower()
                                               : v.toString();
@@ -2059,9 +2213,9 @@ void RecordsPage::onCurrentCellChanged(int currentRow, int currentCol,
 
                     if (dup) {
                         QSignalBlocker blk(ui->twRegistros);
-                        ui->twRegistros->setCurrentCell(previousRow, pk);
+                        refocusCellQueued(previousRow, pk);
                         const QModelIndex ix = ui->twRegistros->model()->index(previousRow, pk);
-                        showCellTip(this, ix, tr("La clave primaria no puede tener duplicados."), 1800);
+                        showRequiredPopup(ix, tr("La clave primaria no puede tener duplicados."), 1800);
                         return;
                     }
                 }
@@ -2097,17 +2251,16 @@ void RecordsPage::onCurrentCellChanged(int currentRow, int currentCol,
                 const int missCol = firstRequiredEmptyInRow(prevDataRow);
                 if (missCol >= 0) {
                     QSignalBlocker blk(ui->twRegistros);
-                    ui->twRegistros->setCurrentCell(prevDataRow, missCol);
+                    refocusCellQueued(prevDataRow, missCol);
                     const QModelIndex ix = ui->twRegistros->model()->index(prevDataRow, missCol);
-                    showCellTip(this, ix,
-                                tr("Complete los campos requeridos de esta fila antes de crear una nueva."),
-                                2000);
+                    showRequiredPopup(ix,
+                                      tr("Complete los campos requeridos de esta fila antes de crear una nueva."),
+                                      2000);
                     return; // ← NO permitimos editar la fila Nueva
                 }
             }
         }
     }
-
 
     // === lo que ya tenías ===
     const int last = ui->twRegistros->rowCount() - 1;

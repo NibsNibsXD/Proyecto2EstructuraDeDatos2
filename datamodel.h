@@ -66,6 +66,8 @@ public:
     static DataModel& instance();
     void markColumnEdited(const QString& table, const QString& colName);
 
+
+
     QVariant nextAutoNumber(const QString& name);  // genera el siguiente autonum
     int autoColumn(const Schema& s) const;
 
