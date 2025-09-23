@@ -3,6 +3,7 @@
 #include "recordspage.h"
 #include "datamodel.h"
 #include "querypage.h"   // <<< NUEVO
+#include "accessquerydesigner.h" // <<< NUEVO: diseñador visual en clase aparte
 
 #include <QApplication>
 #include <QScreen>
@@ -52,6 +53,7 @@
 #include <QGraphicsSceneHoverEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QToolTip>
+#include <QDockWidget> // <<< NUEVO
 
 // Tamaños base
 static constexpr int kWinW   = 1400;
@@ -1564,13 +1566,43 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
         }
     }
 
-    // ====== Create → Queries: abrir QueryPage ======
+    // ====== Create → Queries ======
+    // 1) Dock con el diseñador visual (clase aparte, sin .ui)
+    QDockWidget* accessDock = new QDockWidget("Consultas (Visual)", this);
+    accessDock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    auto* accessDesigner = new AccessQueryDesignerPage;
+    accessDock->setWidget(accessDesigner);
+    addDockWidget(Qt::LeftDockWidgetArea, accessDock);
+    accessDock->hide(); // se muestra al pulsar "Query Design"
+
+    // 2) Conectar ejecuciones del diseñador a QueryPage
+    connect(accessDesigner, &AccessQueryDesignerPage::runSql, this,
+            [stack, queriesPage, queriesIdx](const QString& sql){
+                // mostrar la pestaña de resultados
+                stack->setCurrentIndex(queriesIdx);
+                QMetaObject::invokeMethod(queriesPage, "setSqlText", Qt::DirectConnection,
+                                          Q_ARG(QString, sql));
+                QMetaObject::invokeMethod(queriesPage, "runQuery", Qt::DirectConnection);
+            });
+
+    // 3) Cuando se guarda/renombra/elimina una consulta → refrescar lista izquierda
+    connect(accessDesigner, &AccessQueryDesignerPage::savedQuery, this,
+            [refreshQueries](const QString&){ refreshQueries(); });
+
+    // 4) Botones del ribbon Create:
     if (auto *createRibbonW = ribbonStack->widget(1)) {
         for (auto *b : createRibbonW->findChildren<QToolButton*>()) {
             const QString t = b->text();
-            if (t == "Query Wizard" || t == "Query Design") {
+            if (t == "Query Wizard") {
+                // Abrimos la página de resultados/SQL crudo
                 connect(b, &QToolButton::clicked, this, [stack, queriesIdx]{
                     stack->setCurrentIndex(queriesIdx);
+                });
+            } else if (t == "Query Design") {
+                // Abrimos el diseñador visual estilo Access (dock)
+                connect(b, &QToolButton::clicked, this, [accessDock]{
+                    accessDock->setVisible(true);
+                    accessDock->raise();
                 });
             }
         }
@@ -1720,7 +1752,7 @@ QWidget* ShellWindow::buildCreateRibbon() {
                 homeBtn->setChecked(true);                 // si tienes puntero miembro
                 createBtn->setChecked(false);
 #else \
-    // Fallback: búscalos por texto
+                // Fallback: búscalos por texto
                 for (auto *tb : this->findChildren<QToolButton*>()) {
                     if (tb->text() == "Home")   tb->setChecked(true);
                     if (tb->text() == "Create") tb->setChecked(false);
@@ -1740,7 +1772,7 @@ QWidget* ShellWindow::buildCreateRibbon() {
                                          QString("Placeholder: %1 (abriría diseñador de tablas).").arg(t));
             });
         }
-        // NOTA: "Query Wizard"/"Query Design" se conectan en el constructor para abrir QueryPage
+        // NOTA: "Query Wizard"/"Query Design" se conectan en el constructor para abrir QueryPage o el dock visual
     }
 
     return wrap;

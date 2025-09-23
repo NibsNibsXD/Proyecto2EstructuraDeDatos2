@@ -75,7 +75,8 @@ if(SHELL_SRCS)
   add_executable(shell_sandbox ${SHELL_SRCS}
     querypage.h querypage.cpp
     querystore.h querystore.cpp
-    querydesigner.h querydesigner.cpp)
+    querydesigner.h querydesigner.cpp
+    accessquerydesigner.h accessquerydesigner.cpp)
   target_link_libraries(shell_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
   # Para que shellwindow.cpp pueda incluir "recordspage.h"
   target_include_directories(shell_sandbox PRIVATE
