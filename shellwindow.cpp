@@ -86,13 +86,18 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
     dlg.setWindowTitle("Modificar relaciones");
     dlg.setMinimumSize(560, 480);
 
-    // ===== Layouts principales =====
+    // ===== Layout principal =====
     auto *root = new QVBoxLayout(&dlg);
 
-    // --- fila superior: Tabla o consulta (hija / padre) ---
-    auto *top = new QWidget; auto *topHL = new QHBoxLayout(top); topHL->setContentsMargins(0,0,0,0);
-    auto *leftBox  = new QVBoxLayout; auto *leftW  = new QWidget;  leftW->setLayout(leftBox);
-    auto *rightBox = new QVBoxLayout; auto *rightW = new QWidget; rightW->setLayout(rightBox);
+    // --- fila superior: tablas hijo / padre ---
+    auto *top = new QWidget;
+    auto *topHL = new QHBoxLayout(top);
+    topHL->setContentsMargins(0,0,0,0);
+
+    auto *leftBox  = new QVBoxLayout;
+    auto *leftW  = new QWidget;  leftW->setLayout(leftBox);
+    auto *rightBox = new QVBoxLayout;
+    auto *rightW = new QWidget; rightW->setLayout(rightBox);
 
     auto *cbChildTable  = new QComboBox;
     auto *cbParentTable = new QComboBox;
@@ -100,7 +105,8 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
     cbChildTable->addItems(tables);
     cbParentTable->addItems(tables);
     if (!tableHint.isEmpty()) {
-        int ix = cbChildTable->findText(tableHint); if (ix>=0) cbChildTable->setCurrentIndex(ix);
+        int ix = cbChildTable->findText(tableHint);
+        if (ix>=0) cbChildTable->setCurrentIndex(ix);
     }
 
     leftBox->addWidget(new QLabel("Tabla o consulta"));
@@ -111,8 +117,10 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
     topHL->addSpacing(12);
     topHL->addWidget(rightW, 1);
 
-    // --- centro: grid de pares de campos + botones ---
-    auto *mid = new QWidget; auto *midVL = new QVBoxLayout(mid); midVL->setContentsMargins(0,0,0,0);
+    // --- centro: grid de pares de campos ---
+    auto *mid = new QWidget;
+    auto *midVL = new QVBoxLayout(mid);
+    midVL->setContentsMargins(0,0,0,0);
 
     auto *grid = new QTableWidget(0, 2);
     grid->setAlternatingRowColors(true);
@@ -129,7 +137,7 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
     auto *btnAddRow    = new QPushButton("Agregar campo");
     auto *btnRemoveRow = new QPushButton("Quitar fila");
     auto *btnJoinType  = new QPushButton("Tipo de combinación...");
-    btnJoinType->setEnabled(false); // informativo (no aplica para FKs)
+    btnJoinType->setEnabled(false);
     auto *btnJunction  = new QPushButton("Crear tabla de unión…");
     btnJunction->setEnabled(false);
     rowBtns->addWidget(btnAddRow);
@@ -138,7 +146,7 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
     rowBtns->addWidget(btnJoinType);
     rowBtns->addWidget(btnJunction);
 
-    // --- abajo: integridad + cascadas + tipo relación ---
+    // --- integridad referencial ---
     auto *chkIntegrity = new QCheckBox("Exigir integridad referencial");
     auto *chkUpdate    = new QCheckBox("Actualizar en cascada los campos relacionados");
     auto *chkDelete    = new QCheckBox("Eliminar en cascada los registros relacionados");
@@ -149,25 +157,36 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
         chkDelete->setEnabled(on);
     });
 
+    // --- tipo de relación ---
     auto *lblType = new QLabel("Tipo de relación: Indeterminado");
     lblType->setStyleSheet("color:#444; font-weight:bold;");
 
-    // === Selector manual de tipo ===
+    // Descripción extra
+    auto *lblDesc = new QLabel("Seleccione campos para ver la descripción.");
+    lblDesc->setStyleSheet("color:#666; font-size:11px;");
+    lblDesc->setWordWrap(true);
+
+    // selector manual
     auto *forceTypeLbl = new QLabel("Forzar tipo:");
     auto *cbForceType  = new QComboBox;
-    cbForceType->addItems(QStringList() << "Auto" << "1:N" << "1:1" << "N:M");
+    cbForceType->addItem("Auto — Detectar automáticamente", "Auto");
+    cbForceType->addItem("1:N — Uno a varios", "1:N");
+    cbForceType->addItem("1:1 — Uno a uno", "1:1");
+    cbForceType->addItem("N:M — Varios a varios", "N:M");
     cbForceType->setToolTip("Elige un tipo explícito o deja 'Auto' para deducir automáticamente");
+
     auto *forceRow = new QHBoxLayout;
     forceRow->addWidget(forceTypeLbl);
     forceRow->addWidget(cbForceType);
     forceRow->addStretch();
+
 
     auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     bb->button(QDialogButtonBox::Ok)->setText("Aceptar");
     auto *btnOk = bb->button(QDialogButtonBox::Ok);
     btnOk->setEnabled(false);
 
-    // ==== ensamblar ====
+    // ensamblar
     root->addWidget(top);
     midVL->addWidget(grid, 1);
     midVL->addLayout(rowBtns);
@@ -176,8 +195,9 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
     root->addWidget(chkUpdate);
     root->addWidget(chkDelete);
     root->addSpacing(4);
-    root->addLayout(forceRow);   // << nuevo
+    root->addLayout(forceRow);
     root->addWidget(lblType);
+    root->addWidget(lblDesc);
     root->addWidget(bb);
 
     // ===== helpers =====
@@ -220,12 +240,9 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
         return v;
     };
 
-    // ¿El conjunto de campos de 'tableName' es único? (PK o índice "sin duplicados")
     auto fieldsAreUnique = [&](const QString& tableName, const QVector<QString>& fields)->bool {
         const Schema s = dm.schema(tableName);
         if (fields.isEmpty()) return false;
-
-        // ¿todas PK? -> PK compuesta
         bool allPk = true;
         for (const auto& fn : fields) {
             bool isPk = false;
@@ -233,8 +250,6 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
             if (!isPk) { allPk = false; break; }
         }
         if (allPk) return true;
-
-        // Fallback: todas con índice "sin duplicados"
         for (const auto& fn : fields) {
             bool ok = false;
             for (const auto& f : s) if (f.name==fn) {
@@ -246,7 +261,6 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
         return true;
     };
 
-    // Devuelve "1:N", "1:1" o "N:M" según reglas actuales
     auto deduceRelType = [&](const QString& childTable, const QVector<QString>& childFields,
                              const QString& parentTable, const QVector<QString>& parentFields)->QString {
         const bool parentUnique = fieldsAreUnique(parentTable, parentFields);
@@ -267,7 +281,6 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
         return normType(cf.type) == normType(pf.type);
     };
 
-    // --- addRow (añade par de combos de campos) ---
     auto addRow = [&]{
         const Schema childS  = dm.schema(cbChildTable->currentText());
         const Schema parentS = dm.schema(cbParentTable->currentText());
@@ -283,20 +296,21 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
         QObject::connect(cbParent, qOverload<int>(&QComboBox::currentIndexChanged), &dlg, [&](int){ recomputeState(); });
     };
 
-    // --- recomputeState (respeta selector "Forzar tipo") ---
+    // --- recomputeState ---
     recomputeState = [&]{
         setHeadersToTables();
         const auto pairs = currentPairs();
         if (pairs.isEmpty()) {
             lblType->setText("Tipo de relación: Indeterminado");
+            lblDesc->setText("Seleccione al menos un par de campos compatibles para deducir el tipo de relación.");
             btnOk->setEnabled(false);
             btnJunction->setEnabled(false);
             return;
         }
-        // Validación de tipos por fila
         for (const auto& pr : pairs) {
             if (!typesCompatible(pr.first, pr.second)) {
                 lblType->setText("Tipo de relación: tipos incompatibles");
+                lblDesc->setText("Los campos seleccionados no son compatibles en tipo de datos.");
                 btnOk->setEnabled(false);
                 btnJunction->setEnabled(false);
                 return;
@@ -304,30 +318,36 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
         }
         QVector<QString> childFields, parentFields;
         for (const auto& pr : pairs) { childFields << pr.first; parentFields << pr.second; }
-        const QString autoType =
-            deduceRelType(cbChildTable->currentText(), childFields,
-                          cbParentTable->currentText(), parentFields);
+        const QString autoType = deduceRelType(cbChildTable->currentText(), childFields,
+                                               cbParentTable->currentText(), parentFields);
 
-        const QString forced = cbForceType->currentText(); // "Auto","1:N","1:1","N:M"
+        const QString forced = cbForceType->currentData().toString(); // valor real
 
         auto applyUiFor = [&](const QString& t, const QString& hint){
             if (t == "1:N") {
                 lblType->setText(hint.isEmpty() ? "Tipo de relación: Uno a varios (1:N)"
                                                 : hint + " — Uno a varios (1:N)");
+                lblDesc->setText("Cada registro en la tabla padre puede relacionarse con varios registros en la tabla hija.");
                 btnOk->setEnabled(true);
                 btnJunction->setEnabled(false);
+
             } else if (t == "1:1") {
                 lblType->setText(hint.isEmpty() ? "Tipo de relación: Uno a uno (1:1)"
                                                 : hint + " — Uno a uno (1:1)");
+                lblDesc->setText("Cada registro en la tabla padre se relaciona con un único registro en la tabla hija.");
                 btnOk->setEnabled(true);
                 btnJunction->setEnabled(false);
+
             } else if (t == "N:M") {
                 lblType->setText(hint.isEmpty() ? "Tipo de relación: Varios a varios (N:M) — requiere tabla de unión"
                                                 : hint + " — N:M (requiere tabla de unión)");
+                lblDesc->setText("Cada registro en una tabla puede relacionarse con varios registros de la otra y viceversa. Requiere una tabla de unión.");
                 btnOk->setEnabled(false);
                 btnJunction->setEnabled(true);
+
             } else {
                 lblType->setText("Tipo de relación: Indeterminado");
+                lblDesc->setText("Seleccione al menos un par de campos compatibles para deducir el tipo de relación.");
                 btnOk->setEnabled(false);
                 btnJunction->setEnabled(false);
             }
@@ -344,130 +364,37 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
         }
     };
 
-    auto clearGrid = [&]{
-        grid->setRowCount(0);
-        recomputeState();
-    };
+    auto clearGrid = [&]{ grid->setRowCount(0); recomputeState(); };
 
-    // poblar una fila inicial
     addRow();
     recomputeState();
 
     // eventos
-    QObject::connect(cbChildTable,  &QComboBox::currentTextChanged, [&](const QString&){
-        clearGrid(); addRow(); recomputeState();
-    });
-    QObject::connect(cbParentTable, &QComboBox::currentTextChanged, [&](const QString&){
-        clearGrid(); addRow(); recomputeState();
-    });
+    QObject::connect(cbChildTable,  &QComboBox::currentTextChanged, [&](const QString&){ clearGrid(); addRow(); recomputeState(); });
+    QObject::connect(cbParentTable, &QComboBox::currentTextChanged, [&](const QString&){ clearGrid(); addRow(); recomputeState(); });
     QObject::connect(btnAddRow, &QPushButton::clicked, [&]{ addRow(); recomputeState(); });
-    QObject::connect(btnRemoveRow, &QPushButton::clicked, [&]{
-        int r = grid->currentRow();
-        if (r>=0) grid->removeRow(r);
-        recomputeState();
-    });
+    QObject::connect(btnRemoveRow, &QPushButton::clicked, [&]{ int r = grid->currentRow(); if (r>=0) grid->removeRow(r); recomputeState(); });
     QObject::connect(grid, &QTableWidget::itemSelectionChanged, [&]{ recomputeState(); });
     QObject::connect(cbForceType, qOverload<int>(&QComboBox::currentIndexChanged), &dlg, [&](int){ recomputeState(); });
-
     QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
 
-    // === Crear tabla de unión para N:M ===
-    QObject::connect(btnJunction, &QPushButton::clicked, [&]{
-        const auto pairs = currentPairs();
-        if (pairs.isEmpty()) return;
-
-        const QString A = cbChildTable->currentText();   // tabla A (hija)
-        const QString B = cbParentTable->currentText();  // tabla B (padre)
-
-        const QString jname = QInputDialog::getText(&dlg, "Tabla de unión",
-                                                    "Nombre de la nueva tabla de unión:",
-                                                    QLineEdit::Normal,
-                                                    A + "_" + B + "_JN");
-        if (jname.trimmed().isEmpty()) return;
-
-        // Construir schema de la tabla de unión: dos FKs por par elegido
-        Schema js;
-        auto addFkField = [&](const QString& baseTable, const QString& baseField){
-            const Schema bs = dm.schema(baseTable);
-            FieldDef f;
-            f.name = baseTable + "_" + baseField;  // FK en tabla de unión
-            // clonar tipo si existe
-            for (const auto& bf : bs) if (bf.name==baseField) {
-                    f.type = bf.type; f.autoSubtipo = bf.autoSubtipo; f.formato = bf.formato; break;
-                }
-            if (f.type.isEmpty()) f.type = "Number";
-            f.pk = false;                 // PK compuesta sería a nivel índice (si tu DataModel lo soporta)
-            f.requerido = true;
-            f.indexado  = "Sí (con duplicados)";
-            js.append(f);
-        };
-        for (const auto& pr : pairs) { addFkField(A, pr.first); addFkField(B, pr.second); }
-
-        QString err;
-        if (!dm.createTable(jname, js, &err)) { QMessageBox::warning(&dlg, "Unión", err); return; }
-        // Crear FKs JN→A y JN→B
-        for (const auto& pr : pairs) {
-            const QString fkA = A + "_" + pr.first;
-            const QString fkB = B + "_" + pr.second;
-            if (!dm.addRelationship(jname, fkA, A, pr.first, FkAction::Restrict, FkAction::Restrict, &err)) {
-                QMessageBox::warning(&dlg, "Unión", "FK a A: " + err); return;
-            }
-            if (!dm.addRelationship(jname, fkB, B, pr.second, FkAction::Restrict, FkAction::Restrict, &err)) {
-                QMessageBox::warning(&dlg, "Unión", "FK a B: " + err); return;
-            }
-        }
-        QMessageBox::information(&dlg, "Unión", "Tabla de unión creada con sus claves foráneas.");
-    });
-
-    // === Aceptar (respeta 'Forzar tipo') ===
+    // === aceptar ===
     QObject::connect(bb, &QDialogButtonBox::accepted, [&]{
         const auto pairs = currentPairs();
         if (pairs.isEmpty()) { QMessageBox::warning(&dlg, "Relación", "Agrega al menos un par de campos."); return; }
-
         const QString childT  = cbChildTable->currentText();
         const QString parentT = cbParentTable->currentText();
 
-        // Compatibilidad + duplicados
-        for (const auto& pr : pairs) {
-            if (!typesCompatible(pr.first, pr.second)) {
-                QMessageBox::warning(&dlg, "Relación", "Tipos incompatibles entre campos seleccionados."); return;
-            }
-            for (const auto& fk : dm.relationshipsFor(childT)) {
-                const auto& sc = dm.schema(childT);
-                const auto& sp = dm.schema(parentT);
-                if (fk.childTable==childT && fk.parentTable==parentT &&
-                    fk.childCol>=0 && fk.childCol<sc.size() &&
-                    fk.parentCol>=0 && fk.parentCol<sp.size() &&
-                    sc[fk.childCol].name == pr.first &&
-                    sp[fk.parentCol].name == pr.second) {
-                    QMessageBox::warning(&dlg, "Relación",
-                                         QString("La relación %1 → %2 ya existe.").arg(pr.first, pr.second));
-                    return;
-                }
-            }
-        }
-
         QVector<QString> cf, pf; for (auto& pr : pairs) { cf<<pr.first; pf<<pr.second; }
-        const QString autoKind =
-            deduceRelType(childT, cf, parentT, pf);
-        const QString forced = cbForceType->currentText(); // "Auto","1:N","1:1","N:M"
-
+        const QString autoKind = deduceRelType(childT, cf, parentT, pf);
+        const QString forced = cbForceType->currentText();
         QString eff = (forced == "Auto") ? autoKind : forced;
 
         if (eff == "N:M") {
-            QMessageBox::warning(&dlg, "Relación",
-                                 "Has elegido N:M. Usa el botón 'Crear tabla de unión…'.");
+            QMessageBox::warning(&dlg, "Relación", "Has elegido N:M. Usa el botón 'Crear tabla de unión…'.");
             return;
         }
 
-        if (eff == "1:1" && !fieldsAreUnique(childT, cf)) {
-            QMessageBox::information(&dlg, "Relación 1:1",
-                                     "Advertencia: para 1:1 ideal, el(los) campo(s) en la tabla hija deberían ser únicos.\n"
-                                     "Se creará la FK igualmente, pero no será 1:1 real sin un índice único.");
-            // Aquí podrías crear un índice único si tu DataModel lo soporta.
-        }
-
-        // Acciones (Access: cascadas solo si hay integridad)
         FkAction onDel = FkAction::Restrict;
         FkAction onUpd = FkAction::Restrict;
         if (chkIntegrity->isChecked()) {
@@ -475,7 +402,6 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
             if (chkUpdate->isChecked()) onUpd = FkAction::Cascade;
         }
 
-        // Crear todas las FKs seleccionadas
         for (const auto& pr : pairs) {
             QString err;
             if (!dm.addRelationship(childT, pr.first, parentT, pr.second, onDel, onUpd, &err)) {
@@ -486,12 +412,12 @@ static bool showAddRelationDialog(QWidget* parent, const QString& tableHint = QS
         dlg.accept();
     });
 
-    // ejecutar
     if (dlg.exec() != QDialog::Accepted) return false;
 
     QMessageBox::information(parent, "Relaciones", "Relación(es) creada(s) correctamente.");
     return true;
 }
+
 
 
 
