@@ -18,10 +18,26 @@
 
 static bool isTomb(const Record& r){ return r.isEmpty(); }
 
+// ---------- normalización de tokens de columna ----------
+static QString normalizeColToken(QString t){
+    t = t.trimmed();
+    // quita envoltorios: [Col], "Col", `Col`
+    if ((t.startsWith('[') && t.endsWith(']')) ||
+        (t.startsWith('"') && t.endsWith('"')) ||
+        (t.startsWith('`') && t.endsWith('`'))) {
+        t = t.mid(1, t.size()-2);
+    }
+    // si viene calificado Tabla.Columna, quedarnos con la parte derecha
+    int dot = t.lastIndexOf('.');
+    if (dot > 0) t = t.mid(dot+1).trimmed();
+    return t;
+}
+
 // -------- helpers locales (evitan usar métodos privados de DataModel) --------
 static int schemaFieldIndex(const Schema& s, const QString& name){
+    const QString n = normalizeColToken(name);
     for (int i = 0; i < s.size(); ++i)
-        if (s[i].name.compare(name, Qt::CaseInsensitive) == 0) return i;
+        if (s[i].name.compare(n, Qt::CaseInsensitive) == 0) return i;
     return -1;
 }
 static int cmpVar(const QVariant& a, const QVariant& b){
@@ -241,7 +257,7 @@ bool QueryPage::parseSelect(const QString& sql, SelectSpec& out, QString* err){
     int pWS = table.indexOf(' ');
     if(pWS>0) table = table.left(pWS);
     table = table.trimmed();
-    if(table.endsWith(';')) table.chop(1);   // *** FIX ***
+    if(table.endsWith(';')) table.chop(1);
     out.table = table;
     rest = rest.mid(table.size()).trimmed();
 
@@ -257,11 +273,13 @@ bool QueryPage::parseSelect(const QString& sql, SelectSpec& out, QString* err){
         int end = rest.size(); if(pOrder>=0) end = qMin(end, pOrder); if(pLimit>=0) end=qMin(end,pLimit);
         QString where = rest.mid(pAfterWhere, end-pAfterWhere).trimmed();
         auto parts = where.split(QRegularExpression("\\bAND\\b"), Qt::SkipEmptyParts);
-        QRegularExpression re("^([A-Za-z_][A-Za-z0-9_]*)\\s*(=|!=|<>|>=|<=|>|<)\\s*(.+)$");
+
+        // permite Tabla.Columna
+        QRegularExpression re("^([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?)\\s*(=|!=|<>|>=|<=|>|<)\\s*(.+)$");
         for(const QString& w : parts){
             auto m=re.match(w.trimmed());
             if(!m.hasMatch()){ if(err) *err="WHERE inválido"; return false; }
-            SelectSpec::Cond c{ m.captured(1), m.captured(2), parseLiteral(m.captured(3).trimmed()) };
+            SelectSpec::Cond c{ normalizeColToken(m.captured(1)), m.captured(2), parseLiteral(m.captured(3).trimmed()) };
             out.where<<c;
         }
         rest = rest.mid(end).trimmed();
@@ -271,7 +289,7 @@ bool QueryPage::parseSelect(const QString& sql, SelectSpec& out, QString* err){
     if(rest.startsWith("ORDER BY ", Qt::CaseInsensitive)){
         QString tail = takeAfter(rest, "ORDER BY ");
         QStringList t = tail.split(' ', Qt::SkipEmptyParts);
-        out.orderBy = t.value(0);
+        out.orderBy = t.value(0);                    // puede venir calificado; schemaFieldIndex lo normaliza
         out.orderDesc = (t.size()>1 && up(t[1])=="DESC");
         // recorta aproximado
         int pos = rest.indexOf(out.orderBy, 0, Qt::CaseInsensitive);
@@ -308,10 +326,12 @@ bool QueryPage::parseDelete(const QString& sql, DeleteSpec& out, QString* err){
     if(!m.hasMatch()) return false;
     out.table=m.captured(1);
     if(m.captured(3).isEmpty()){ out.hasWhere=false; return true; }
-    QRegularExpression rc("^([A-Za-z_][A-Za-z0-9_]*)\\s*(=|!=|<>|>=|<=|>|<)\\s*(.+)$");
+
+    // permite Tabla.Columna en DELETE
+    QRegularExpression rc("^([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?)\\s*(=|!=|<>|>=|<=|>|<)\\s*(.+)$");
     auto mw = rc.match(m.captured(3).trimmed());
     if(!mw.hasMatch()){ if(err) *err="WHERE inválido"; return false; }
-    out.hasWhere=true; out.where={ mw.captured(1), mw.captured(2), parseLiteral(m.captured(3).trimmed()) };
+    out.hasWhere=true; out.where={ normalizeColToken(mw.captured(1)), mw.captured(2), parseLiteral(mw.captured(3).trimmed()) };
     return true;
 }
 
@@ -338,15 +358,20 @@ void QueryPage::execSelect(const SelectSpec& q){
 
     const auto s = dm.schema(table);
 
-    // columnas
+    // columnas (mantén encabezados como el usuario los escribió, usa normalizados para buscar)
     QStringList cols = q.columns;
-    if(cols.isEmpty()) for(const auto& f : s) cols<<f.name;
+    QStringList lookups;
+    if(cols.isEmpty()){
+        for(const auto& f : s){ cols<<f.name; lookups<<f.name; }
+    } else {
+        for(const QString& c : cols) lookups << normalizeColToken(c);
+    }
 
     // map de nombre->índice
     QVector<int> colIdx; colIdx.reserve(cols.size());
-    for(const QString& c : cols){
-        int ix = schemaFieldIndex(s, c);
-        if(ix<0){ QMessageBox::warning(this, "SELECT", QString("Columna '%1' no existe").arg(c)); return; }
+    for(int i=0;i<cols.size();++i){
+        int ix = schemaFieldIndex(s, lookups[i]);
+        if(ix<0){ QMessageBox::warning(this, "SELECT", QString("Columna '%1' no existe").arg(cols[i])); return; }
         colIdx<<ix;
     }
 
@@ -387,7 +412,7 @@ void QueryPage::execSelect(const SelectSpec& q){
 
     // ordenar
     if(!q.orderBy.isEmpty()){
-        int oi = schemaFieldIndex(s, q.orderBy);
+        int oi = schemaFieldIndex(s, q.orderBy); // soporta calificado
         if(oi<0){ QMessageBox::warning(this, "SELECT", "ORDER BY columna inválida"); return; }
         std::sort(rows.begin(), rows.end(), [&](const Row& a, const Row& b){
             int cmp = cmpVar(a.rec->value(oi), b.rec->value(oi));

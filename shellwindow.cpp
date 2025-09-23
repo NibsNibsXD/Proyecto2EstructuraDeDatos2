@@ -1751,8 +1751,8 @@ QWidget* ShellWindow::buildCreateRibbon() {
 #ifdef HAS_HOMEBTN_MEMBER
                 homeBtn->setChecked(true);                 // si tienes puntero miembro
                 createBtn->setChecked(false);
-#else \
-                // Fallback: búscalos por texto
+#else \ \
+    // Fallback: búscalos por texto
                 for (auto *tb : this->findChildren<QToolButton*>()) {
                     if (tb->text() == "Home")   tb->setChecked(true);
                     if (tb->text() == "Create") tb->setChecked(false);

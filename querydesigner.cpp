@@ -1,5 +1,6 @@
 #include "querydesigner.h"
-#include "querystore.h"
+// ya no dependemos de QueryStore para guardar en UI; usamos DataModel
+#include "datamodel.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -15,10 +16,23 @@
 #include <QDate>
 #include <QInputDialog>
 
+// ---------- normalización de tokens de columna ----------
+static QString normalizeColToken(QString t){
+    t = t.trimmed();
+    if ((t.startsWith('[') && t.endsWith(']')) ||
+        (t.startsWith('"') && t.endsWith('"')) ||
+        (t.startsWith('`') && t.endsWith('`'))) {
+        t = t.mid(1, t.size()-2);
+    }
+    int dot = t.lastIndexOf('.');
+    if (dot > 0) t = t.mid(dot+1).trimmed();
+    return t;
+}
 
-// ===== helpers (idénticos a los de QueryPage) =====
+// ===== helpers (mismos criterios que QueryPage) =====
 int QueryDesignerPage::schemaFieldIndex(const Schema& s, const QString& name){
-    for(int i=0;i<s.size();++i) if(s[i].name.compare(name, Qt::CaseInsensitive)==0) return i;
+    const QString n = normalizeColToken(name);
+    for(int i=0;i<s.size();++i) if(s[i].name.compare(n, Qt::CaseInsensitive)==0) return i;
     return -1;
 }
 int QueryDesignerPage::cmpVar(const QVariant& a, const QVariant& b){
@@ -44,6 +58,20 @@ int QueryDesignerPage::cmpVar(const QVariant& a, const QVariant& b){
 bool QueryDesignerPage::equalVar(const QVariant& a, const QVariant& b){
     if(!a.isValid() && !b.isValid()) return true;
     return cmpVar(a,b)==0;
+}
+
+static QString up(const QString& s){ return QString(s).toUpper(); }
+static QVariant parseLiteral(const QString& tok){
+    QString s=tok.trimmed();
+    if(s.startsWith('\'') && s.endsWith('\'')) return s.mid(1,s.size()-2);
+    if(up(s)=="TRUE") return true;
+    if(up(s)=="FALSE") return false;
+    if(up(s)=="NULL") return QVariant();
+    bool ok=false;
+    qlonglong i=s.toLongLong(&ok); if(ok) return QVariant::fromValue(i);
+    double d=s.toDouble(&ok); if(ok) return d;
+    QDate dt=QDate::fromString(s, "yyyy-MM-dd"); if(dt.isValid()) return dt;
+    return s;
 }
 
 // ====================================================
@@ -110,10 +138,13 @@ QueryDesignerPage::QueryDesignerPage(QWidget* parent) : QWidget(parent){
     mid->addWidget(lwColumns_, 0);
     mid->addLayout(condBox, 1);
 
-    // Abajo: grid y status
+    // Abajo: grid y status (asegurar visibilidad)
     grid_ = new QTableWidget;
+    grid_->setObjectName("designerGrid");
     grid_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     grid_->horizontalHeader()->setStretchLastSection(true);
+    grid_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    grid_->setMinimumHeight(180);
 
     status_ = new QLabel; status_->setStyleSheet("color:#444");
 
@@ -194,8 +225,8 @@ QString QueryDesignerPage::buildSql() const {
         QString val = edVal->text().trimmed();
         // si parece número/true/false/fecha, lo dejamos; sino, comillamos
         bool ok=false; (void)val.toDouble(&ok);
-        const QString up = val.toUpper();
-        const bool isBool = (up=="TRUE" || up=="FALSE");
+        const QString upv = val.toUpper();
+        const bool isBool = (upv=="TRUE" || upv=="FALSE");
         const bool isDate = QDate::fromString(val, "yyyy-MM-dd").isValid();
         if (!ok && !isBool && !isDate && !val.startsWith("'")) val = "'" + val + "'";
         whereParts << (col + " " + op + " " + val);
@@ -213,7 +244,7 @@ QString QueryDesignerPage::buildSql() const {
 }
 
 void QueryDesignerPage::execSelectSql(const QString& sql){
-    // Implementación local: ejecutar como en QueryPage::execSelect
+    // Ejecutar SELECT con WHERE/ORDER/LIMIT localmente (como QueryPage)
     auto& dm = DataModel::instance();
     QString s = sql.trimmed();
     if (s.endsWith(';')) s.chop(1);
@@ -225,79 +256,205 @@ void QueryDesignerPage::execSelectSql(const QString& sql){
     QString colsPart = s.mid(7, pFrom-7).trimmed();
     QString rest = s.mid(pFrom+6).trimmed();
 
+    // tabla
     QString table = rest;
     int pWS = table.indexOf(' ');
     if (pWS>0) table = table.left(pWS);
     table = table.trimmed();
     if (table.endsWith(';')) table.chop(1);
+
     const Schema schema = dm.schema(table);
     if (schema.isEmpty()) { QMessageBox::warning(this, "SELECT", "Tabla no encontrada"); return; }
+    const auto& data = dm.rows(table);
 
     // columnas
-    QStringList cols;
-    if (colsPart=="*") for (const auto& f : schema) cols<<f.name;
-    else for (QString c : colsPart.split(',', Qt::SkipEmptyParts)) cols << c.trimmed();
+    QStringList cols, lookups;
+    if (colsPart=="*") {
+        for (const auto& f : schema) { cols<<f.name; lookups<<f.name; }
+    } else {
+        for (QString c : colsPart.split(',', Qt::SkipEmptyParts)){
+            c = c.trimmed();
+            cols    << c;
+            lookups << normalizeColToken(c);
+        }
+    }
+
+    // WHERE
+    struct Cond { QString col; QString op; QVariant val; };
+    QVector<Cond> where;
+    int pWhere = rest.indexOf(" WHERE ", Qt::CaseInsensitive);
+    int pOrder = rest.indexOf(" ORDER BY ", Qt::CaseInsensitive);
+    int pLimit = rest.indexOf(" LIMIT ", Qt::CaseInsensitive);
+    int endRest = rest.size();
+    if (pOrder>=0) endRest = qMin(endRest, pOrder);
+    if (pLimit>=0) endRest = qMin(endRest, pLimit);
+
+    if (pWhere==0) {
+        QString wherePart = rest.mid(7, endRest-7).trimmed();
+        auto parts = wherePart.split(QRegularExpression("\\bAND\\b"), Qt::SkipEmptyParts);
+        QRegularExpression re("^([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)?)\\s*(=|!=|<>|>=|<=|>|<)\\s*(.+)$");
+        for (const QString& w : parts) {
+            auto m = re.match(w.trimmed());
+            if (!m.hasMatch()) { QMessageBox::warning(this, "SELECT", "WHERE inválido"); return; }
+            where.push_back({ normalizeColToken(m.captured(1)), m.captured(2), parseLiteral(m.captured(3).trimmed()) });
+        }
+    }
+
+    // ORDER BY
+    QString orderCol; bool orderDesc=false;
+    if (pOrder>=0) {
+        QString tail = rest.mid(pOrder+10).trimmed(); // después de "ORDER BY "
+        QStringList t = tail.split(' ', Qt::SkipEmptyParts);
+        if (!t.isEmpty()) orderCol = t[0];
+        if (t.size()>1 && up(t[1])=="DESC") orderDesc = true;
+    }
+
+    // LIMIT
+    int limit = -1;
+    if (pLimit>=0) {
+        QString n = rest.mid(pLimit+7).trimmed(); // después de "LIMIT "
+        bool ok=false; int v = n.toInt(&ok);
+        if (ok) limit = v; else { QMessageBox::warning(this, "SELECT", "LIMIT inválido"); return; }
+    }
 
     // preparar header
+    grid_->setVisible(true);
     grid_->clear(); grid_->setRowCount(0);
     grid_->setColumnCount(cols.size());
     grid_->setHorizontalHeaderLabels(cols);
 
-    // recolectar filas (sin WHERE aquí; ya filtramos con buildSql → lo metimos literal)
-    const auto& data = dm.rows(table);
-    int r=0; grid_->setRowCount(data.size());
-    for (int i=0;i<data.size();++i){
-        const auto& rec = data[i];
-        if (rec.isEmpty()) continue;
-        for (int c=0;c<cols.size();++c){
-            int ix = schemaFieldIndex(schema, cols[c]);
-            if (ix<0) { QMessageBox::warning(this,"SELECT","Columna inválida"); return; }
-            auto *it = new QTableWidgetItem(rec.value(ix).toString());
-            grid_->setItem(r,c,it);
+    // predicado
+    auto matchRow = [&](const Record& r)->bool{
+        for (const auto& c : where) {
+            int ci = schemaFieldIndex(schema, c.col); if (ci<0) return false;
+            QVariant v = r.value(ci);
+            QString op = c.op; if (op=="<>") op = "!=";
+
+            if(op=="=")  { if(!equalVar(v, c.val)) return false; continue; }
+            if(op=="!=") { if( equalVar(v, c.val)) return false; continue; }
+
+            int cmp = cmpVar(v, c.val);
+            if(op==">"  && !(cmp>0))  return false;
+            if(op=="<"  && !(cmp<0))  return false;
+            if(op==">=" && !(cmp>=0)) return false;
+            if(op=="<=" && !(cmp<=0)) return false;
         }
-        ++r;
+        return true;
+    };
+
+    // recolectar
+    struct Row { const Record* rec; };
+    QVector<Row> rows; rows.reserve(data.size());
+    for (const auto& r : data) {
+        if (r.isEmpty()) continue;
+        if (matchRow(r)) rows.push_back({ &r });
     }
-    grid_->setRowCount(r);
-    status_->setText(QString::number(r) + " fila(s) — " + sql);
+
+    // ordenar
+    if (!orderCol.isEmpty()) {
+        int oi = schemaFieldIndex(schema, orderCol);
+        if (oi<0) { QMessageBox::warning(this, "SELECT", "ORDER BY columna inválida"); return; }
+        std::sort(rows.begin(), rows.end(), [&](const Row& a, const Row& b){
+            int cmp = cmpVar(a.rec->value(oi), b.rec->value(oi));
+            return orderDesc ? (cmp>0) : (cmp<0);
+        });
+    }
+
+    // LIMIT
+    int take = rows.size(); if (limit>=0) take = qMin(take, limit);
+
+    // volcado
+    grid_->setRowCount(take);
+    for (int r=0; r<take; ++r) {
+        for (int c=0; c<cols.size(); ++c) {
+            int ix = schemaFieldIndex(schema, lookups[c]);
+            if (ix<0) { QMessageBox::warning(this, "SELECT", QString("Columna '%1' no existe").arg(cols[c])); return; }
+            auto *it = new QTableWidgetItem(rows[r].rec->value(ix).toString());
+            grid_->setItem(r, c, it);
+        }
+    }
+    status_->setText(QString::number(take) + " fila(s) — " + sql);
 }
 
 void QueryDesignerPage::onRun(){
     execSelectSql(buildSql());
+    grid_->setFocus();
 }
 
 void QueryDesignerPage::onSave(){
-    QString name = edName_->text().trimmed();
+    const QString name = edName_->text().trimmed();
     if (name.isEmpty()) { QMessageBox::warning(this,"Guardar","Ponle un nombre a la consulta."); return; }
     QString err;
-    if (!QueryStore::instance().save(name, buildSql(), &err)) {
-        QMessageBox::warning(this,"Guardar", err);
+    if (!DataModel::instance().saveQuery(name, buildSql(), &err)) {
+        QMessageBox::warning(this,"Guardar", err.isEmpty()? "No se pudo guardar." : err);
         return;
     }
-    emit savedQuery(name);
+    // DataModel emite queriesChanged → ShellWindow refresca la lista
     QMessageBox::information(this, "Guardar", "Consulta guardada.");
 }
 
 void QueryDesignerPage::onRename(){
-    QString oldName = edName_->text().trimmed();
-    if (oldName.isEmpty()) { QMessageBox::warning(this,"Renombrar","Primero escribe el nombre actual."); return; }
-    bool ok=false;
-    QString nn = QInputDialog::getText(this,"Renombrar","Nuevo nombre:", QLineEdit::Normal, oldName, &ok);
-    if(!ok || nn.trimmed().isEmpty()) return;
-    QString err;
-    if (!QueryStore::instance().rename(oldName, nn.trimmed(), &err)) {
-        QMessageBox::warning(this,"Renombrar", err); return;
+    const QString oldName = edName_->text().trimmed();
+    if (oldName.isEmpty()) {
+        QMessageBox::warning(this,"Renombrar","Primero escribe el nombre actual.");
+        return;
     }
-    edName_->setText(nn.trimmed());
-    emit savedQuery(nn.trimmed());
+
+    bool ok=false;
+    const QString nn = QInputDialog::getText(
+                           this,"Renombrar","Nuevo nombre:", QLineEdit::Normal, oldName, &ok
+                           ).trimmed();
+    if(!ok || nn.isEmpty()) return;
+
+    const QString newName = nn;
+    auto& dm = DataModel::instance();
+
+    // Si solo cambia casing, no hacemos nada especial
+    if (QString::compare(oldName, newName, Qt::CaseInsensitive) == 0) {
+        edName_->setText(newName);
+        QMessageBox::information(this, "Renombrar", "Sin cambios.");
+        return;
+    }
+
+    // Confirmar sobreescritura si existe
+    bool exists = false;
+    for (const auto& n : dm.queries())
+        if (QString::compare(n, newName, Qt::CaseInsensitive) == 0) { exists = true; break; }
+    if (exists) {
+        auto ret = QMessageBox::question(this,"Renombrar",
+                                         QString("“%1” ya existe. ¿Deseas reemplazarla?").arg(newName),
+                                         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (ret != QMessageBox::Yes) return;
+    }
+
+    // SQL actual de la consulta vieja
+    const QString sql = dm.querySql(oldName);
+    if (sql.isEmpty()) {
+        QMessageBox::warning(this, "Renombrar", "No se encontró SQL de la consulta original.");
+        return;
+    }
+
+    // Guardar como nuevo y eliminar la vieja
+    QString err;
+    if (!dm.saveQuery(newName, sql, &err)) {
+        QMessageBox::warning(this,"Renombrar", err.isEmpty()? "No se pudo guardar con el nuevo nombre." : err);
+        return;
+    }
+    QString err2;
+    if (QString::compare(oldName, newName, Qt::CaseInsensitive) != 0)
+        dm.removeQuery(oldName, &err2);
+
+    edName_->setText(newName);
+    QMessageBox::information(this, "Renombrar", "Consulta renombrada.");
 }
 
 void QueryDesignerPage::onDelete(){
-    QString name = edName_->text().trimmed();
+    const QString name = edName_->text().trimmed();
     if (name.isEmpty()) return;
     QString err;
-    if (!QueryStore::instance().remove(name, &err)) {
-        QMessageBox::warning(this,"Eliminar", err); return;
+    if (!DataModel::instance().removeQuery(name, &err)) {
+        QMessageBox::warning(this,"Eliminar", err.isEmpty()? "No se pudo eliminar." : err);
+        return;
     }
-    emit savedQuery(name);
     QMessageBox::information(this, "Eliminar", "Consulta eliminada.");
 }
