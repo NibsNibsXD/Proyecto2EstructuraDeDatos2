@@ -1494,3 +1494,5 @@ bool DataModel::removeQuery(const QString& name, QString* err) {
     if (err) *err = tr("No existe la consulta \"%1\".").arg(n);
     return false;
 }
+
+

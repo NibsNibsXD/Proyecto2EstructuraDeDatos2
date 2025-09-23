@@ -29,6 +29,13 @@ signals:
     void navState(int cur, int tot, bool canPrev, bool canNext);
 public:
     void showRequiredPopup(const QModelIndex& ix, const QString& msg, int msec = 1800);
+    // Nombre de la tabla actual (solo lectura)
+    const QString& tableName() const { return m_tableName; }
+
+    // Mapeo vista->modelo para el delegado
+    int viewRowToDataRow(int vr) const {
+        return (vr >= 0 && vr < m_rowMap.size()) ? m_rowMap[vr] : -1;
+    }
 
 
 public slots:
@@ -89,6 +96,8 @@ private:
     bool requiredEmptyInRow(int vrow, int* whichCol = nullptr) const;
 
     bool m_reqPopupBusy = false;
+    void refocusCellQueued(int row, int col);
+
 
 
 
