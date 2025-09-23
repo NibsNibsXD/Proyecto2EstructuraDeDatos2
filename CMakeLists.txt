@@ -48,7 +48,8 @@ collect_existing(APP_SRCS
   app_miniaccess/mainwindow.ui    mainwindow.ui
 )
 if(APP_SRCS)
-  add_executable(app_miniaccess ${APP_SRCS})
+  add_executable(app_miniaccess ${APP_SRCS}
+  )
   target_link_libraries(app_miniaccess PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
   target_include_directories(app_miniaccess PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -76,7 +77,11 @@ if(SHELL_SRCS)
     querypage.h querypage.cpp
     querystore.h querystore.cpp
     querydesigner.h querydesigner.cpp
-    accessquerydesigner.h accessquerydesigner.cpp)
+    accessquerydesigner.h accessquerydesigner.cpp
+    freespacemanager.h freespacemanager.cpp
+    binserializer.h binserializer.cpp
+    binstorage.h binstorage.cpp
+    binmirror.h binmirror.cpp)
   target_link_libraries(shell_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
   # Para que shellwindow.cpp pueda incluir "recordspage.h"
   target_include_directories(shell_sandbox PRIVATE
