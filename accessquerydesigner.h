@@ -2,41 +2,45 @@
 #include <QWidget>
 #include <QString>
 
-class QComboBox; class QListWidget; class QTableWidget;
-class QToolButton; class QSpinBox; class QLabel; class QLineEdit;
+class QComboBox;
+class QLineEdit;
+class QListWidget;
+class QTableWidget;
+class QToolButton;
+class QSpinBox;
+class QLabel;
 
 /**
- * Diseñador visual estilo Access:
- *  - Combo de Tabla + lista de Campos
- *  - Grid “Access-like” con columnas: Field | Table | Criteria | Or
- *  - Botonera de comparadores (=, <>, >, <, >=, <=, LIKE, BETWEEN, IN, IS NULL, …)
- *  - LIMIT y preview del SQL
- *  - Guardar / Renombrar / Eliminar en QueryStore (JSON)
- *  - Ejecutar (emite runSql(sql))
- *
- * Nota: Orden (ORDER BY) y Show/Hide se pueden añadir en una 2ª pasada.
+ * Diseñador visual de consultas (estilo Access).
+ * - Selección de tabla y columnas
+ * - Condiciones WHERE (2 filas: Criteria / Or)
+ * - LIMIT
+ * - Ejecutar: muestra resultados en un grid propio (abajo) y emite runSql(sql)
+ * - Guardar / Guardar como / Renombrar / Eliminar vía DataModel
  */
 class AccessQueryDesignerPage : public QWidget {
     Q_OBJECT
 public:
     explicit AccessQueryDesignerPage(QWidget* parent=nullptr);
 
-    Q_SLOT void setName(const QString& name);
-    Q_SLOT void setSqlText(const QString& sql); // solo muestra en preview (no parsea)
+public slots:
+    void setName(const QString& name);
+    void setSqlText(const QString& sql);
 
-Q_SIGNALS:
-    void savedQuery(const QString& name);
+signals:
     void runSql(const QString& sql);
+    void savedQuery(const QString& name);
 
-private Q_SLOTS:
-    void onTableChanged(const QString& table);
+private slots:
+    // columnas / grid
+    void onTableChanged(const QString&);
     void onAddSelectedField();
     void onRemoveSelectedColumn();
     void onMoveLeft();
     void onMoveRight();
     void onClearGrid();
 
-    // Insert helpers para comparadores (en la celda activa de Criteria/Or)
+    // insertar operadores en la celda activa (Criteria/Or)
     void onInsertOpEq();
     void onInsertOpNe();
     void onInsertOpGt();
@@ -51,6 +55,7 @@ private Q_SLOTS:
     void onInsertTrue();
     void onInsertFalse();
 
+    // acciones
     void onRun();
     void onSave();
     void onSaveAs();
@@ -58,19 +63,24 @@ private Q_SLOTS:
     void onDelete();
 
 private:
+    // helpers
     void rebuildFields();
     QString buildSql() const;
-    QString currentTable() const;
+    QString currentTable() const;             // <— solo declaración (sin cuerpo aquí)
     void insertIntoActiveCriteriaCell(const QString& text);
 
-    // UI (todo creado en código)
-    QComboBox*     cbTable_   = nullptr;
-    QListWidget*   lwFields_  = nullptr;
-    QTableWidget*  grid_      = nullptr;   // 2 filas: Criteria y Or; n columnas = campos añadidos
-    QSpinBox*      spLimit_   = nullptr;
-    QLineEdit*     edName_    = nullptr;
-    QLabel*        sqlPreview_= nullptr;
-    QLabel*        status_    = nullptr;
+    // ---- UI ----
+    QComboBox*     cbTable_    {nullptr};
+    QLineEdit*     edName_     {nullptr};
+
+    QListWidget*   lwFields_   {nullptr};   // lista de campos de la tabla
+    QTableWidget*  grid_       {nullptr};   // 2 filas (Criteria/Or), N columnas = campos
+
+    QSpinBox*      spLimit_    {nullptr};
+
+    QLabel*        sqlPreview_ {nullptr};   // texto SQL
+    QTableWidget*  results_    {nullptr};   // resultados embebidos
+    QLabel*        status_     {nullptr};   // estado (filas/SQL)
 
     QString        lastSqlText_;
 };

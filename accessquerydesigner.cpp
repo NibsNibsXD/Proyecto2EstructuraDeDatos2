@@ -1,6 +1,5 @@
 #include "accessquerydesigner.h"
 #include "datamodel.h"
-#include "querystore.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -14,7 +13,63 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QInputDialog>
+#include <QDate>
 
+// ===== Helpers =====
+static QString up(const QString& s){ return QString(s).toUpper(); }
+
+static QString normalizeColToken(QString t){
+    t = t.trimmed();
+    if ((t.startsWith('[') && t.endsWith(']')) ||
+        (t.startsWith('"') && t.endsWith('"')) ||
+        (t.startsWith('`') && t.endsWith('`'))) {
+        t = t.mid(1, t.size()-2);
+    }
+    int dot = t.lastIndexOf('.');
+    if (dot > 0) t = t.mid(dot+1).trimmed();
+    return t;
+}
+static int schemaFieldIndex(const Schema& s, const QString& name){
+    const QString n = normalizeColToken(name);
+    for (int i=0;i<s.size();++i) if(s[i].name.compare(n, Qt::CaseInsensitive)==0) return i;
+    return -1;
+}
+static int cmpVar(const QVariant& a, const QVariant& b){
+    if(!a.isValid() && !b.isValid()) return 0;
+    if(!a.isValid()) return -1;
+    if(!b.isValid()) return 1;
+    if(a.userType()==QMetaType::QDate || b.userType()==QMetaType::QDate){
+        QDate da = a.userType()==QMetaType::QDate ? a.toDate() : QDate::fromString(a.toString(),"yyyy-MM-dd");
+        QDate db = b.userType()==QMetaType::QDate ? b.toDate() : QDate::fromString(b.toString(),"yyyy-MM-dd");
+        if(!da.isValid() || !db.isValid())
+            return QString::compare(a.toString(), b.toString(), Qt::CaseInsensitive);
+        if(da<db) return -1; if(da>db) return 1; return 0;
+    }
+    bool okA=false, okB=false;
+    double da=a.toDouble(&okA), db=b.toDouble(&okB);
+    if(okA && okB){ if(da<db) return -1; if(da>db) return 1; return 0; }
+    if(a.typeId()==QMetaType::LongLong || b.typeId()==QMetaType::LongLong){
+        qlonglong ia=a.toLongLong(&okA), ib=b.toLongLong(&okB);
+        if(okA && okB){ if(ia<ib) return -1; if(ia>ib) return 1; return 0; }
+    }
+    return QString::compare(a.toString(), b.toString(), Qt::CaseInsensitive);
+}
+static bool equalVar(const QVariant& a, const QVariant& b){
+    if(!a.isValid() && !b.isValid()) return true;
+    return cmpVar(a,b)==0;
+}
+static QVariant parseLiteral(const QString& tok){
+    QString s=tok.trimmed();
+    if(s.startsWith('\'') && s.endsWith('\'')) return s.mid(1, s.size()-2);
+    if(up(s)=="TRUE")  return true;
+    if(up(s)=="FALSE") return false;
+    if(up(s)=="NULL")  return QVariant();
+    bool ok=false;
+    qlonglong i=s.toLongLong(&ok); if(ok) return QVariant::fromValue(i);
+    double d=s.toDouble(&ok);      if(ok) return d;
+    QDate dt=QDate::fromString(s, "yyyy-MM-dd"); if(dt.isValid()) return dt;
+    return s;
+}
 static QToolButton* mkBtn(const QString& text){
     auto *b = new QToolButton;
     b->setText(text);
@@ -23,12 +78,14 @@ static QToolButton* mkBtn(const QString& text){
     return b;
 }
 
+// =======================================================================
+
 AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(parent){
     auto root = new QVBoxLayout(this);
     root->setContentsMargins(8,8,8,8);
     root->setSpacing(6);
 
-    // ===== Barra superior =====
+    // Barra superior
     auto top = new QHBoxLayout; top->setSpacing(8);
     top->addWidget(new QLabel("Tabla:"));
     cbTable_ = new QComboBox; cbTable_->addItems(DataModel::instance().tables());
@@ -48,28 +105,32 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
     top->addWidget(bRun); top->addWidget(bSave); top->addWidget(bSaveAs);
     top->addWidget(bRen); top->addWidget(bDel);
 
-    // ===== Centro: Campos (izq) + Grid tipo Access (der) =====
+    // Centro: Campos + Grid tipo Access
     auto mid = new QHBoxLayout; mid->setSpacing(10);
 
-    // Izquierda: lista de campos
+    // Campos
     auto leftCol = new QVBoxLayout;
     leftCol->addWidget(new QLabel("Campos"));
     lwFields_ = new QListWidget; lwFields_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     leftCol->addWidget(lwFields_, 1);
-    auto bAdd = mkBtn("Añadir al grid →");
-    leftCol->addWidget(bAdd);
 
-    // Derecha: herramientas + grid
+    auto bAdd    = mkBtn("Añadir al grid →");
+    auto bRemove = mkBtn("Quitar col");
+    auto bClear  = mkBtn("Limpiar grid");
+    auto bLeft   = mkBtn("←");
+    auto bRight  = mkBtn("→");
+
+    auto moveRow = new QHBoxLayout;
+    moveRow->addWidget(bAdd);
+    moveRow->addWidget(bRemove);
+    moveRow->addWidget(bClear);
+    moveRow->addStretch();
+    leftCol->addLayout(moveRow);
+
+    // Herramientas y grid
     auto rightCol = new QVBoxLayout;
 
-    // Herramientas (mover/quitar/operadores)
     auto tools = new QHBoxLayout;
-    auto bLeft  = mkBtn("←");
-    auto bRight = mkBtn("→");
-    auto bRemove= mkBtn("Quitar col");
-    auto bClear = mkBtn("Limpiar grid");
-    tools->addWidget(bLeft); tools->addWidget(bRight); tools->addWidget(bRemove); tools->addWidget(bClear);
-    tools->addSpacing(18);
     tools->addWidget(new QLabel("Operadores:"));
     auto bEq = mkBtn("="), bNe = mkBtn("<>"), bGt = mkBtn(">"), bLt = mkBtn("<"),
         bGe = mkBtn(">="), bLe = mkBtn("<="), bLike = mkBtn("LIKE"),
@@ -78,9 +139,7 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
         bTrue = mkBtn("TRUE"), bFalse = mkBtn("FALSE");
     for (auto *b : {bEq,bNe,bGt,bLt,bGe,bLe,bLike,bBetween,bIn,bIsNull,bNotNull,bTrue,bFalse}) tools->addWidget(b);
 
-    // Grid: 2 filas fijas (Criteria / Or), columnas dinámicas por campo añadido
     grid_ = new QTableWidget(2, 0);
-    grid_->setHorizontalHeaderLabels(QStringList()); // headers = nombres de campo al añadir
     grid_->horizontalHeader()->setStretchLastSection(true);
     grid_->verticalHeader()->setVisible(true);
     grid_->setVerticalHeaderLabels(QStringList() << "Criteria" << "Or");
@@ -101,27 +160,33 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
 
     status_ = new QLabel; status_->setStyleSheet("color:#666");
 
-    auto rightWrap = new QVBoxLayout;
-    rightWrap->addLayout(tools);
-    rightWrap->addWidget(grid_, 1);
-    rightWrap->addLayout(bottom);
+    rightCol->addLayout(tools);
+    rightCol->addWidget(grid_, 1);
+    rightCol->addLayout(bottom);
 
     mid->addLayout(leftCol, 0);
-    mid->addLayout(rightWrap, 1);
+    mid->addLayout(rightCol, 1);
+
+    // Resultados embebidos (abajo)
+    results_ = new QTableWidget;
+    results_->setObjectName("designerResults");
+    results_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    results_->horizontalHeader()->setStretchLastSection(true);
+    results_->setMinimumHeight(200);
 
     root->addLayout(top);
-    root->addLayout(mid, 1);
+    root->addLayout(mid, 0);
+    root->addWidget(results_, 1);
     root->addWidget(status_);
 
     // Conexiones
     connect(cbTable_, &QComboBox::currentTextChanged, this, &AccessQueryDesignerPage::onTableChanged);
     connect(lwFields_, &QListWidget::itemDoubleClicked, [this](QListWidgetItem*){ onAddSelectedField(); });
-    connect(bAdd, &QToolButton::clicked, this, &AccessQueryDesignerPage::onAddSelectedField);
-
+    connect(bAdd,    &QToolButton::clicked, this, &AccessQueryDesignerPage::onAddSelectedField);
     connect(bRemove, &QToolButton::clicked, this, &AccessQueryDesignerPage::onRemoveSelectedColumn);
+    connect(bClear,  &QToolButton::clicked, this, &AccessQueryDesignerPage::onClearGrid);
     connect(bLeft,   &QToolButton::clicked, this, &AccessQueryDesignerPage::onMoveLeft);
     connect(bRight,  &QToolButton::clicked, this, &AccessQueryDesignerPage::onMoveRight);
-    connect(bClear,  &QToolButton::clicked, this, &AccessQueryDesignerPage::onClearGrid);
 
     connect(bEq, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertOpEq);
     connect(bNe, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertOpNe);
@@ -147,10 +212,16 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
     onTableChanged(cbTable_->currentText());
 }
 
-void AccessQueryDesignerPage::setName(const QString& name){ edName_->setText(name); }
-void AccessQueryDesignerPage::setSqlText(const QString& sql){ lastSqlText_ = sql; sqlPreview_->setText(sql); }
-QString AccessQueryDesignerPage::currentTable() const { return cbTable_->currentText(); }
+// ========== API pública ==========
+void AccessQueryDesignerPage::setName(const QString& name){ if (edName_) edName_->setText(name); }
+void AccessQueryDesignerPage::setSqlText(const QString& sql){ lastSqlText_ = sql; if (sqlPreview_) sqlPreview_->setText(sql); }
 
+// *** DEFINICIÓN QUE FALTABA ***
+QString AccessQueryDesignerPage::currentTable() const {
+    return cbTable_ ? cbTable_->currentText() : QString();
+}
+
+// ========== Campos / grid ==========
 void AccessQueryDesignerPage::rebuildFields(){
     lwFields_->clear();
     const Schema s = DataModel::instance().schema(currentTable());
@@ -160,6 +231,8 @@ void AccessQueryDesignerPage::rebuildFields(){
 void AccessQueryDesignerPage::onTableChanged(const QString&){
     rebuildFields();
     onClearGrid();
+    if (results_) { results_->setRowCount(0); results_->setColumnCount(0); }
+    if (status_) status_->clear();
 }
 
 void AccessQueryDesignerPage::onAddSelectedField(){
@@ -168,13 +241,12 @@ void AccessQueryDesignerPage::onAddSelectedField(){
     for (auto *it : sel) {
         const int col = grid_->columnCount();
         grid_->insertColumn(col);
-        grid_->setHorizontalHeaderItem(col, new QTableWidgetItem(it->text())); // Field name
-        // Creamos celdas vacías Criteria/Or para que se puedan editar
+        grid_->setHorizontalHeaderItem(col, new QTableWidgetItem(it->text()));
         for (int r=0;r<grid_->rowCount();++r){
             if (!grid_->item(r,col)) grid_->setItem(r,col,new QTableWidgetItem);
         }
     }
-    sqlPreview_->setText(buildSql());
+    if (sqlPreview_) sqlPreview_->setText(buildSql());
 }
 
 void AccessQueryDesignerPage::onRemoveSelectedColumn(){
@@ -182,7 +254,7 @@ void AccessQueryDesignerPage::onRemoveSelectedColumn(){
     if (items.isEmpty()) return;
     int col = items.first()->column();
     grid_->removeColumn(col);
-    sqlPreview_->setText(buildSql());
+    if (sqlPreview_) sqlPreview_->setText(buildSql());
 }
 void AccessQueryDesignerPage::onMoveLeft(){
     auto items = grid_->selectedItems(); if (items.isEmpty()) return;
@@ -195,7 +267,7 @@ void AccessQueryDesignerPage::onMoveLeft(){
     auto *hdr = grid_->takeHorizontalHeaderItem(col+1);
     grid_->setHorizontalHeaderItem(col-1, hdr);
     grid_->removeColumn(col+1);
-    sqlPreview_->setText(buildSql());
+    if (sqlPreview_) sqlPreview_->setText(buildSql());
 }
 void AccessQueryDesignerPage::onMoveRight(){
     auto items = grid_->selectedItems(); if (items.isEmpty()) return;
@@ -208,14 +280,14 @@ void AccessQueryDesignerPage::onMoveRight(){
     auto *hdr = grid_->takeHorizontalHeaderItem(col);
     grid_->setHorizontalHeaderItem(col+2, hdr);
     grid_->removeColumn(col);
-    sqlPreview_->setText(buildSql());
+    if (sqlPreview_) sqlPreview_->setText(buildSql());
 }
 void AccessQueryDesignerPage::onClearGrid(){
     grid_->clear();
     grid_->setRowCount(2);
     grid_->setColumnCount(0);
     grid_->setVerticalHeaderLabels(QStringList() << "Criteria" << "Or");
-    sqlPreview_->setText(buildSql());
+    if (sqlPreview_) sqlPreview_->setText(buildSql());
 }
 
 void AccessQueryDesignerPage::insertIntoActiveCriteriaCell(const QString& text){
@@ -229,7 +301,7 @@ void AccessQueryDesignerPage::insertIntoActiveCriteriaCell(const QString& text){
     QString cur = it->text();
     if (!cur.isEmpty() && !cur.endsWith(' ')) cur += ' ';
     it->setText(cur + text);
-    sqlPreview_->setText(buildSql());
+    if (sqlPreview_) sqlPreview_->setText(buildSql());
 }
 
 void AccessQueryDesignerPage::onInsertOpEq(){ insertIntoActiveCriteriaCell("="); }
@@ -246,11 +318,12 @@ void AccessQueryDesignerPage::onInsertNotNull(){ insertIntoActiveCriteriaCell("I
 void AccessQueryDesignerPage::onInsertTrue(){ insertIntoActiveCriteriaCell("TRUE"); }
 void AccessQueryDesignerPage::onInsertFalse(){ insertIntoActiveCriteriaCell("FALSE"); }
 
+// ===== SQL =====
 QString AccessQueryDesignerPage::buildSql() const{
     const QString table = currentTable();
     if (table.isEmpty()) return "";
 
-    // SELECT: si no hay columnas -> *
+    // SELECT
     QStringList cols;
     for (int c=0;c<grid_->columnCount();++c){
         auto *hdr = grid_->horizontalHeaderItem(c);
@@ -261,7 +334,7 @@ QString AccessQueryDesignerPage::buildSql() const{
     }
     const QString select = cols.isEmpty() ? "*" : cols.join(", ");
 
-    // WHERE:
+    // WHERE (2 filas OR; dentro de cada fila, AND)
     auto rowExpr = [&](int row)->QString{
         QStringList ands;
         for (int c=0;c<grid_->columnCount();++c){
@@ -286,30 +359,113 @@ QString AccessQueryDesignerPage::buildSql() const{
     QString sql = "SELECT " + select + " FROM " + table;
     if(!where.isEmpty()) sql += " WHERE " + where;
     int lim = spLimit_->value(); if(lim>0) sql += " LIMIT " + QString::number(lim);
-    return sql;
+    return sql + ";";
 }
 
+// ===== Ejecutar y pintar resultados =====
 void AccessQueryDesignerPage::onRun(){
-    const QString sql = buildSql();
-    sqlPreview_->setText(sql);
-    if (sql.trimmed().isEmpty()) { QMessageBox::information(this,"Ejecutar","La consulta está vacía."); return; }
-    emit runSql(sql);
-    status_->setText("Ejecutada.");
+    auto& dm = DataModel::instance();
+    const QString table = currentTable();
+    const Schema schema = dm.schema(table);
+    if (schema.isEmpty()) { QMessageBox::warning(this, "SELECT", "Tabla no encontrada"); return; }
+
+    // columnas a mostrar
+    QStringList cols;
+    for (int c=0;c<grid_->columnCount();++c){
+        auto *hdr = grid_->horizontalHeaderItem(c);
+        if (hdr && !hdr->text().trimmed().isEmpty()) cols << hdr->text().trimmed();
+    }
+    if (cols.isEmpty()) for (const auto& f : schema) cols << f.name;
+
+    // condiciones sencillas (ambas filas)
+    struct Cond { QString col; QString op; QVariant val; };
+    QVector<Cond> where;
+    for (int c=0;c<grid_->columnCount();++c){
+        auto *hdr = grid_->horizontalHeaderItem(c);
+        if (!hdr) continue;
+        const QString field = hdr->text().trimmed();
+        if (field.isEmpty()) continue;
+
+        auto parseCond = [&](const QString& t)->QVector<Cond>{
+            QString s = t.trimmed();
+            if (s.isEmpty()) return {};
+            static const QStringList ops = {"<>","!=",">=","<=","=","<",">"};
+            for (const QString& op : ops) {
+                if (s.startsWith(op)) {
+                    QString rhs = s.mid(op.size()).trimmed();
+                    return { { field, op=="!=" ? "<>" : op, parseLiteral(rhs) } };
+                }
+            }
+            if (up(s)=="IS NULL")     return { { field, "=", QVariant() } };
+            if (up(s)=="IS NOT NULL") return {};
+            if (up(s)=="TRUE")        return { { field, "=", true } };
+            if (up(s)=="FALSE")       return { { field, "=", false } };
+            return { { field, "=", parseLiteral(s) } };
+        };
+
+        if (auto *c0 = grid_->item(0,c)) for (const auto& cd : parseCond(c0->text())) where << cd;
+        if (auto *c1 = grid_->item(1,c)) for (const auto& cd : parseCond(c1->text())) where << cd;
+    }
+
+    // header resultados
+    results_->clear(); results_->setRowCount(0);
+    results_->setColumnCount(cols.size());
+    QStringList hdr; for (const QString& c : cols) hdr << (table + "." + c);
+    results_->setHorizontalHeaderLabels(hdr);
+
+    auto matchRow = [&](const Record& r)->bool{
+        for (const auto& c : where) {
+            int ci = schemaFieldIndex(schema, c.col); if (ci<0) return false;
+            QVariant v = r.value(ci);
+            QString op = c.op; if (op=="<>") op = "!=";
+
+            if(op=="=")  { if(!equalVar(v, c.val)) return false; continue; }
+            if(op=="!=") { if( equalVar(v, c.val)) return false; continue; }
+
+            int cmp = cmpVar(v, c.val);
+            if(op==">"  && !(cmp>0))  return false;
+            if(op=="<"  && !(cmp<0))  return false;
+            if(op==">=" && !(cmp>=0)) return false;
+            if(op=="<=" && !(cmp<=0)) return false;
+        }
+        return true;
+    };
+
+    const auto& data = dm.rows(table);
+    QVector<const Record*> rows; rows.reserve(data.size());
+    for (const auto& r : data) if (!r.isEmpty() && matchRow(r)) rows << &r;
+
+    int limit = spLimit_->value() > 0 ? spLimit_->value() : -1;
+    int take = rows.size(); if (limit>=0) take = qMin(take, limit);
+
+    results_->setRowCount(take);
+    for (int r=0; r<take; ++r){
+        for (int c=0; c<cols.size(); ++c){
+            int ix = schemaFieldIndex(schema, cols[c]);
+            if (ix<0) continue;
+            results_->setItem(r,c,new QTableWidgetItem(rows[r]->value(ix).toString()));
+        }
+    }
+    if (sqlPreview_) sqlPreview_->setText(buildSql());
+    if (status_) status_->setText(QString::number(take) + " fila(s) — " + buildSql());
+
+    emit runSql(buildSql());
 }
 
+// ===== Persistencia =====
 void AccessQueryDesignerPage::onSave(){
     QString name = edName_->text().trimmed();
     if (name.isEmpty()) { QMessageBox::warning(this,"Guardar","Ponle un nombre a la consulta."); return; }
     QString err;
     const QString sql = buildSql();
-    if (!QueryStore::instance().save(name, sql, &err)) {
-        QMessageBox::warning(this,"Guardar", err); return;
+    if (!DataModel::instance().saveQuery(name, sql, &err)) {
+        QMessageBox::warning(this,"Guardar", err.isEmpty()? "No se pudo guardar." : err);
+        return;
     }
-    sqlPreview_->setText(sql);
+    if (sqlPreview_) sqlPreview_->setText(sql);
     emit savedQuery(name);
     QMessageBox::information(this,"Guardar","Consulta guardada.");
 }
-
 void AccessQueryDesignerPage::onSaveAs(){
     bool ok=false;
     QString nn = QInputDialog::getText(this,"Guardar como","Nombre:", QLineEdit::Normal, edName_->text(), &ok).trimmed();
@@ -317,24 +473,38 @@ void AccessQueryDesignerPage::onSaveAs(){
     edName_->setText(nn);
     onSave();
 }
-
 void AccessQueryDesignerPage::onRename(){
-    QString oldName = edName_->text().trimmed(); if (oldName.isEmpty()) { QMessageBox::warning(this,"Renombrar","Primero escribe el nombre actual."); return; }
+    const QString oldName = edName_->text().trimmed();
+    if (oldName.isEmpty()) { QMessageBox::warning(this,"Renombrar","Primero escribe el nombre actual."); return; }
     bool ok=false;
-    QString nn = QInputDialog::getText(this,"Renombrar","Nuevo nombre:", QLineEdit::Normal, oldName, &ok).trimmed();
+    const QString nn = QInputDialog::getText(this,"Renombrar","Nuevo nombre:", QLineEdit::Normal, oldName, &ok).trimmed();
     if(!ok || nn.isEmpty() || nn==oldName) return;
+
+    const QString oldSql = DataModel::instance().querySql(oldName);
+    if (oldSql.isEmpty()) { QMessageBox::warning(this,"Renombrar","No se encontró la consulta original."); return; }
+
     QString err;
-    if (!QueryStore::instance().rename(oldName, nn, &err)) { QMessageBox::warning(this,"Renombrar", err); return; }
+    if (!DataModel::instance().saveQuery(nn, oldSql, &err)) {
+        QMessageBox::warning(this,"Renombrar", err.isEmpty()? "No se pudo crear la nueva consulta." : err);
+        return;
+    }
+    if (!DataModel::instance().removeQuery(oldName, &err)) {
+        QMessageBox::warning(this,"Renombrar", err.isEmpty()? "La nueva consulta se creó, pero no se pudo borrar la anterior." : err);
+        return;
+    }
     edName_->setText(nn);
     emit savedQuery(nn);
+    QMessageBox::information(this,"Renombrar","Consulta renombrada.");
 }
-
 void AccessQueryDesignerPage::onDelete(){
-    QString name = edName_->text().trimmed();
+    const QString name = edName_->text().trimmed();
     if (name.isEmpty()) return;
     if (QMessageBox::question(this,"Eliminar","¿Eliminar la consulta?")==QMessageBox::No) return;
     QString err;
-    if (!QueryStore::instance().remove(name, &err)) { QMessageBox::warning(this,"Eliminar", err); return; }
+    if (!DataModel::instance().removeQuery(name, &err)) {
+        QMessageBox::warning(this,"Eliminar", err.isEmpty()? "No se pudo eliminar." : err);
+        return;
+    }
     emit savedQuery(name);
     QMessageBox::information(this,"Eliminar","Consulta eliminada.");
 }
