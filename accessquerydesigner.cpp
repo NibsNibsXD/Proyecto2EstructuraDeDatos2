@@ -14,8 +14,9 @@
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QDate>
+#include <QRegularExpression>
 
-// ===== Helpers =====
+// ===== Helpers de valores / normalización =====
 static QString up(const QString& s){ return QString(s).toUpper(); }
 
 static QString normalizeColToken(QString t){
@@ -85,7 +86,7 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
     root->setContentsMargins(8,8,8,8);
     root->setSpacing(6);
 
-    // Barra superior
+    // ===== Barra superior
     auto top = new QHBoxLayout; top->setSpacing(8);
     top->addWidget(new QLabel("Tabla:"));
     cbTable_ = new QComboBox; cbTable_->addItems(DataModel::instance().tables());
@@ -105,10 +106,10 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
     top->addWidget(bRun); top->addWidget(bSave); top->addWidget(bSaveAs);
     top->addWidget(bRen); top->addWidget(bDel);
 
-    // Centro: Campos + Grid tipo Access
+    // ===== Centro: Campos + Grid tipo Access
     auto mid = new QHBoxLayout; mid->setSpacing(10);
 
-    // Campos
+    // Izquierda: lista de campos y botones de columnas
     auto leftCol = new QVBoxLayout;
     leftCol->addWidget(new QLabel("Campos"));
     lwFields_ = new QListWidget; lwFields_->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -127,19 +128,25 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
     moveRow->addStretch();
     leftCol->addLayout(moveRow);
 
-    // Herramientas y grid
+    // Derecha: herramientas + grid + ORDER/LIMIT
     auto rightCol = new QVBoxLayout;
 
+    // Operadores
     auto tools = new QHBoxLayout;
     tools->addWidget(new QLabel("Operadores:"));
     auto bEq = mkBtn("="), bNe = mkBtn("<>"), bGt = mkBtn(">"), bLt = mkBtn("<"),
         bGe = mkBtn(">="), bLe = mkBtn("<="), bLike = mkBtn("LIKE"),
-        bBetween = mkBtn("BETWEEN"), bIn = mkBtn("IN (…)"),
+        bNotLike = mkBtn("NOT LIKE"), bBetween = mkBtn("BETWEEN"),
+        bIn = mkBtn("IN (…)"), bNotIn = mkBtn("NOT IN (…)"),
         bIsNull = mkBtn("IS NULL"), bNotNull = mkBtn("IS NOT NULL"),
-        bTrue = mkBtn("TRUE"), bFalse = mkBtn("FALSE");
-    for (auto *b : {bEq,bNe,bGt,bLt,bGe,bLe,bLike,bBetween,bIn,bIsNull,bNotNull,bTrue,bFalse}) tools->addWidget(b);
+        bTrue = mkBtn("TRUE"), bFalse = mkBtn("FALSE"),
+        bQuotes = mkBtn(" '…' "), bParens = mkBtn("( … )");
+    for (auto *b : {bEq,bNe,bGt,bLt,bGe,bLe,bLike,bNotLike,bBetween,bIn,bNotIn,bIsNull,bNotNull,bTrue,bFalse,bQuotes,bParens})
+        tools->addWidget(b);
 
+    // Grid: N filas (OR); columnas dinámicas por campo añadido
     grid_ = new QTableWidget(2, 0);
+    grid_->setHorizontalHeaderLabels(QStringList()); // los headers son los nombres de campo
     grid_->horizontalHeader()->setStretchLastSection(true);
     grid_->verticalHeader()->setVisible(true);
     grid_->setVerticalHeaderLabels(QStringList() << "Criteria" << "Or");
@@ -147,11 +154,27 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
     grid_->setSelectionBehavior(QAbstractItemView::SelectItems);
     grid_->setEditTriggers(QAbstractItemView::AllEditTriggers);
 
-    // Limit + preview
+    // Fila de utilidades (OR+, OR-)
+    auto orRow = new QHBoxLayout;
+    auto bAddOr = mkBtn("+ OR");
+    auto bDelOr = mkBtn("− OR");
+    orRow->addWidget(bAddOr);
+    orRow->addWidget(bDelOr);
+    orRow->addStretch();
+
+    // Orden + Limit + preview
     auto bottom = new QHBoxLayout;
+    bottom->addWidget(new QLabel("ORDER BY:"));
+    cbOrderBy_ = new QComboBox;
+    btnDesc_   = mkBtn("DESC"); btnDesc_->setCheckable(true);
+    bottom->addWidget(cbOrderBy_, 0);
+    bottom->addWidget(btnDesc_, 0);
+
+    bottom->addSpacing(16);
     bottom->addWidget(new QLabel("LIMIT:"));
     spLimit_ = new QSpinBox; spLimit_->setRange(0, 1000000); spLimit_->setValue(0);
     bottom->addWidget(spLimit_, 0);
+
     bottom->addSpacing(12);
     bottom->addWidget(new QLabel("Preview SQL:"));
     sqlPreview_ = new QLabel; sqlPreview_->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -162,6 +185,7 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
 
     rightCol->addLayout(tools);
     rightCol->addWidget(grid_, 1);
+    rightCol->addLayout(orRow);
     rightCol->addLayout(bottom);
 
     mid->addLayout(leftCol, 0);
@@ -195,12 +219,19 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
     connect(bGe, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertOpGe);
     connect(bLe, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertOpLe);
     connect(bLike, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertOpLike);
+    connect(bNotLike, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertOpNotLike);
     connect(bBetween, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertOpBetween);
     connect(bIn, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertOpIn);
+    connect(bNotIn, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertOpNotIn);
     connect(bIsNull, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertIsNull);
     connect(bNotNull, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertNotNull);
     connect(bTrue, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertTrue);
     connect(bFalse, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertFalse);
+    connect(bQuotes, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertQuotes);
+    connect(bParens, &QToolButton::clicked, this, &AccessQueryDesignerPage::onInsertParens);
+
+    connect(bAddOr, &QToolButton::clicked, this, &AccessQueryDesignerPage::onAddOrRow);
+    connect(bDelOr, &QToolButton::clicked, this, &AccessQueryDesignerPage::onDelOrRow);
 
     connect(bRun,    &QToolButton::clicked, this, &AccessQueryDesignerPage::onRun);
     connect(bSave,   &QToolButton::clicked, this, &AccessQueryDesignerPage::onSave);
@@ -216,16 +247,31 @@ AccessQueryDesignerPage::AccessQueryDesignerPage(QWidget* parent) : QWidget(pare
 void AccessQueryDesignerPage::setName(const QString& name){ if (edName_) edName_->setText(name); }
 void AccessQueryDesignerPage::setSqlText(const QString& sql){ lastSqlText_ = sql; if (sqlPreview_) sqlPreview_->setText(sql); }
 
-// *** DEFINICIÓN QUE FALTABA ***
 QString AccessQueryDesignerPage::currentTable() const {
     return cbTable_ ? cbTable_->currentText() : QString();
+}
+
+// ========== helpers internos ==========
+int AccessQueryDesignerPage::criteriaRowCount() const { return grid_ ? grid_->rowCount() : 0; }
+
+void AccessQueryDesignerPage::ensureGridHeaders(){
+    // Fila 0 se llama "Criteria"; el resto "Or", "Or 2", ...
+    QStringList rows;
+    if (grid_->rowCount() > 0) rows << "Criteria";
+    for (int r=1; r<grid_->rowCount(); ++r) rows << (r==1 ? "Or" : QString("Or %1").arg(r));
+    grid_->setVerticalHeaderLabels(rows);
 }
 
 // ========== Campos / grid ==========
 void AccessQueryDesignerPage::rebuildFields(){
     lwFields_->clear();
+    cbOrderBy_->clear();
+
     const Schema s = DataModel::instance().schema(currentTable());
-    for (const auto& f : s) lwFields_->addItem(f.name);
+    for (const auto& f : s) {
+        lwFields_->addItem(f.name);
+        cbOrderBy_->addItem(f.name);
+    }
 }
 
 void AccessQueryDesignerPage::onTableChanged(const QString&){
@@ -286,7 +332,26 @@ void AccessQueryDesignerPage::onClearGrid(){
     grid_->clear();
     grid_->setRowCount(2);
     grid_->setColumnCount(0);
-    grid_->setVerticalHeaderLabels(QStringList() << "Criteria" << "Or");
+    ensureGridHeaders();
+    if (sqlPreview_) sqlPreview_->setText(buildSql());
+}
+
+void AccessQueryDesignerPage::onAddOrRow(){
+    grid_->insertRow(grid_->rowCount());
+    ensureGridHeaders();
+    // Crear celdas editables en cada columna existente
+    for (int c=0; c<grid_->columnCount(); ++c)
+        if (!grid_->item(grid_->rowCount()-1, c)) grid_->setItem(grid_->rowCount()-1, c, new QTableWidgetItem);
+    if (sqlPreview_) sqlPreview_->setText(buildSql());
+}
+
+void AccessQueryDesignerPage::onDelOrRow(){
+    if (grid_->rowCount() <= 1) return; // siempre dejamos al menos 1 fila
+    int r = grid_->currentRow();
+    if (r < 1) r = grid_->rowCount()-1; // no borrar la fila 0 "Criteria" para evitar líos
+    if (r < 1) return;
+    grid_->removeRow(r);
+    ensureGridHeaders();
     if (sqlPreview_) sqlPreview_->setText(buildSql());
 }
 
@@ -294,12 +359,13 @@ void AccessQueryDesignerPage::insertIntoActiveCriteriaCell(const QString& text){
     auto items = grid_->selectedItems();
     int row = 0, col = 0;
     if (!items.isEmpty()){ row = items.first()->row(); col = items.first()->column(); }
-    if (row<0 || row>1) row=0;
+    if (row<0) row=0;
     if (col<0) return;
+    if (row >= grid_->rowCount() || col >= grid_->columnCount()) return;
     auto *it = grid_->item(row,col);
     if (!it){ it = new QTableWidgetItem; grid_->setItem(row,col,it); }
     QString cur = it->text();
-    if (!cur.isEmpty() && !cur.endsWith(' ')) cur += ' ';
+    if (!cur.isEmpty() && !cur.endsWith(' ') && !text.startsWith(')')) cur += ' ';
     it->setText(cur + text);
     if (sqlPreview_) sqlPreview_->setText(buildSql());
 }
@@ -311,12 +377,16 @@ void AccessQueryDesignerPage::onInsertOpLt(){ insertIntoActiveCriteriaCell("<");
 void AccessQueryDesignerPage::onInsertOpGe(){ insertIntoActiveCriteriaCell(">="); }
 void AccessQueryDesignerPage::onInsertOpLe(){ insertIntoActiveCriteriaCell("<="); }
 void AccessQueryDesignerPage::onInsertOpLike(){ insertIntoActiveCriteriaCell("LIKE "); }
+void AccessQueryDesignerPage::onInsertOpNotLike(){ insertIntoActiveCriteriaCell("NOT LIKE "); }
 void AccessQueryDesignerPage::onInsertOpBetween(){ insertIntoActiveCriteriaCell("BETWEEN  AND "); }
-void AccessQueryDesignerPage::onInsertOpIn(){ insertIntoActiveCriteriaCell("IN ()"); }
+void AccessQueryDesignerPage::onInsertOpIn(){ insertIntoActiveCriteriaCell("IN ('')"); }
+void AccessQueryDesignerPage::onInsertOpNotIn(){ insertIntoActiveCriteriaCell("NOT IN ('')"); }
 void AccessQueryDesignerPage::onInsertIsNull(){ insertIntoActiveCriteriaCell("IS NULL"); }
 void AccessQueryDesignerPage::onInsertNotNull(){ insertIntoActiveCriteriaCell("IS NOT NULL"); }
 void AccessQueryDesignerPage::onInsertTrue(){ insertIntoActiveCriteriaCell("TRUE"); }
 void AccessQueryDesignerPage::onInsertFalse(){ insertIntoActiveCriteriaCell("FALSE"); }
+void AccessQueryDesignerPage::onInsertQuotes(){ insertIntoActiveCriteriaCell("''"); }
+void AccessQueryDesignerPage::onInsertParens(){ insertIntoActiveCriteriaCell("( )"); }
 
 // ===== SQL =====
 QString AccessQueryDesignerPage::buildSql() const{
@@ -334,7 +404,7 @@ QString AccessQueryDesignerPage::buildSql() const{
     }
     const QString select = cols.isEmpty() ? "*" : cols.join(", ");
 
-    // WHERE (2 filas OR; dentro de cada fila, AND)
+    // WHERE (N filas OR; dentro de cada fila, AND)
     auto rowExpr = [&](int row)->QString{
         QStringList ands;
         for (int c=0;c<grid_->columnCount();++c){
@@ -350,15 +420,25 @@ QString AccessQueryDesignerPage::buildSql() const{
         }
         return ands.join(" AND ");
     };
-    const QString r0 = rowExpr(0), r1 = rowExpr(1);
-    QString where;
-    if(!r0.isEmpty() && !r1.isEmpty()) where = "(" + r0 + ") OR (" + r1 + ")";
-    else if(!r0.isEmpty()) where = r0;
-    else if(!r1.isEmpty()) where = r1;
+
+    QStringList orRows;
+    for (int r=0; r<grid_->rowCount(); ++r) {
+        QString rr = rowExpr(r);
+        if (!rr.isEmpty()) orRows << "(" + rr + ")";
+    }
 
     QString sql = "SELECT " + select + " FROM " + table;
-    if(!where.isEmpty()) sql += " WHERE " + where;
-    int lim = spLimit_->value(); if(lim>0) sql += " LIMIT " + QString::number(lim);
+    if(!orRows.isEmpty()) sql += " WHERE " + orRows.join(" OR ");
+
+    // ORDER BY
+    if (cbOrderBy_ && cbOrderBy_->count()>0 && !cbOrderBy_->currentText().trimmed().isEmpty()) {
+        sql += " ORDER BY " + table + "." + cbOrderBy_->currentText().trimmed();
+        if (btnDesc_ && btnDesc_->isChecked()) sql += " DESC";
+    }
+
+    int lim = spLimit_ ? spLimit_->value() : 0;
+    if(lim>0) sql += " LIMIT " + QString::number(lim);
+
     return sql + ";";
 }
 
@@ -377,34 +457,92 @@ void AccessQueryDesignerPage::onRun(){
     }
     if (cols.isEmpty()) for (const auto& f : schema) cols << f.name;
 
-    // condiciones sencillas (ambas filas)
+    // condiciones sencillas (todas las filas OR)
     struct Cond { QString col; QString op; QVariant val; };
-    QVector<Cond> where;
-    for (int c=0;c<grid_->columnCount();++c){
-        auto *hdr = grid_->horizontalHeaderItem(c);
-        if (!hdr) continue;
-        const QString field = hdr->text().trimmed();
-        if (field.isEmpty()) continue;
+    using CondRow = QVector<Cond>;
+    QVector<CondRow> whereRows;
 
-        auto parseCond = [&](const QString& t)->QVector<Cond>{
-            QString s = t.trimmed();
-            if (s.isEmpty()) return {};
-            static const QStringList ops = {"<>","!=",">=","<=","=","<",">"};
-            for (const QString& op : ops) {
-                if (s.startsWith(op)) {
-                    QString rhs = s.mid(op.size()).trimmed();
-                    return { { field, op=="!=" ? "<>" : op, parseLiteral(rhs) } };
-                }
+    auto parseCond = [&](const QString& field, const QString& t)->CondRow{
+        QString s = t.trimmed();
+        if (s.isEmpty()) return {};
+        // operadores binarios comunes
+        static const QStringList ops = {"<>","!=",">=","<=","=","<",">"};
+        for (const QString& op : ops) {
+            if (s.startsWith(op)) {
+                QString rhs = s.mid(op.size()).trimmed();
+                return { { field, op=="!=" ? "<>" : op, parseLiteral(rhs) } };
             }
-            if (up(s)=="IS NULL")     return { { field, "=", QVariant() } };
-            if (up(s)=="IS NOT NULL") return {};
-            if (up(s)=="TRUE")        return { { field, "=", true } };
-            if (up(s)=="FALSE")       return { { field, "=", false } };
-            return { { field, "=", parseLiteral(s) } };
-        };
+        }
+        // IS NULL / NOT NULL / TRUE / FALSE
+        if (up(s)=="IS NULL")     return { { field, "=", QVariant() } };
+        if (up(s)=="IS NOT NULL") return {}; // no lo filtramos explícitamente (se deja pasar todos)
+        if (up(s)=="TRUE")        return { { field, "=", true } };
+        if (up(s)=="FALSE")       return { { field, "=", false } };
 
-        if (auto *c0 = grid_->item(0,c)) for (const auto& cd : parseCond(c0->text())) where << cd;
-        if (auto *c1 = grid_->item(1,c)) for (const auto& cd : parseCond(c1->text())) where << cd;
+        // BETWEEN a AND b
+        {
+            QRegularExpression re("^BETWEEN\\s+(.+)\\s+AND\\s+(.+)$", QRegularExpression::CaseInsensitiveOption);
+            auto m = re.match(s);
+            if (m.hasMatch()) {
+                QVariant a = parseLiteral(m.captured(1).trimmed());
+                QVariant b = parseLiteral(m.captured(2).trimmed());
+                // Modelamos como (>= a) y (<= b)
+                return { {field, ">=", a}, {field, "<=", b} };
+            }
+        }
+
+        // IN ( … )
+        {
+            QRegularExpression re("^NOT\\s+IN\\s*\\((.+)\\)$", QRegularExpression::CaseInsensitiveOption);
+            auto m = re.match(s);
+            if (m.hasMatch()) {
+                QStringList toks = m.captured(1).split(',', Qt::SkipEmptyParts);
+                CondRow cr;
+                // NOT IN lo modelamos como != para cada elemento y luego AND
+                for (auto t : toks) cr << Cond{field, "<>", parseLiteral(t.trimmed())};
+                return cr;
+            }
+        }
+        {
+            QRegularExpression re("^IN\\s*\\((.+)\\)$", QRegularExpression::CaseInsensitiveOption);
+            auto m = re.match(s);
+            if (m.hasMatch()) {
+                QStringList toks = m.captured(1).split(',', Qt::SkipEmptyParts);
+                // IN lo modelamos como OR de iguales; aquí devolvemos un truco:
+                // el ejecutor de abajo sólo entiende AND dentro de fila,
+                // así que simplificamos a "igual a alguno" replicando filas no es trivial.
+                // Para mantenerlo simple, si hay IN, dejaremos pasar y el preview no filtrará por IN.
+                // (El SQL generado sí tendrá IN porque lo insertamos tal cual.)
+                return {}; // no aplicamos filtro local; se verá en la ejecución real si la hay
+            }
+        }
+
+        // LIKE / NOT LIKE: tampoco hacemos el patrón en preview local; lo omitimos.
+        if (s.startsWith("LIKE ", Qt::CaseInsensitive) ||
+            s.startsWith("NOT LIKE ", Qt::CaseInsensitive)) {
+            return {};
+        }
+
+        // genérico: igualdad del literal completo
+        return { { field, "=", parseLiteral(s) } };
+    };
+
+    for (int r=0; r<grid_->rowCount(); ++r){
+        CondRow rowConds;
+        for (int c=0;c<grid_->columnCount();++c){
+            auto *hdr = grid_->horizontalHeaderItem(c);
+            if (!hdr) continue;
+            const QString field = hdr->text().trimmed();
+            if (field.isEmpty()) continue;
+
+            auto *crit = grid_->item(r,c);
+            if (!crit) continue;
+            const QString cond = crit->text().trimmed();
+            if (cond.isEmpty()) continue;
+
+            for (const auto& cd : parseCond(field, cond)) rowConds << cd;
+        }
+        if (!rowConds.isEmpty()) whereRows << rowConds;
     }
 
     // header resultados
@@ -413,8 +551,8 @@ void AccessQueryDesignerPage::onRun(){
     QStringList hdr; for (const QString& c : cols) hdr << (table + "." + c);
     results_->setHorizontalHeaderLabels(hdr);
 
-    auto matchRow = [&](const Record& r)->bool{
-        for (const auto& c : where) {
+    auto matchRowAND = [&](const Record& r, const QVector<Cond>& andConds)->bool{
+        for (const auto& c : andConds) {
             int ci = schemaFieldIndex(schema, c.col); if (ci<0) return false;
             QVariant v = r.value(ci);
             QString op = c.op; if (op=="<>") op = "!=";
@@ -430,14 +568,35 @@ void AccessQueryDesignerPage::onRun(){
         }
         return true;
     };
+    auto matchRowOR = [&](const Record& r)->bool{
+        if (whereRows.isEmpty()) return true;
+        for (const auto& andGroup : whereRows)
+            if (matchRowAND(r, andGroup)) return true;
+        return false;
+    };
 
     const auto& data = dm.rows(table);
     QVector<const Record*> rows; rows.reserve(data.size());
-    for (const auto& r : data) if (!r.isEmpty() && matchRow(r)) rows << &r;
+    for (const auto& r : data) if (!r.isEmpty() && matchRowOR(r)) rows << &r;
 
-    int limit = spLimit_->value() > 0 ? spLimit_->value() : -1;
+    // ORDER BY (local, si es posible)
+    QString orderCol = cbOrderBy_ ? cbOrderBy_->currentText().trimmed() : QString();
+    bool orderDesc = btnDesc_ && btnDesc_->isChecked();
+    if (!orderCol.isEmpty()){
+        int oi = schemaFieldIndex(schema, orderCol);
+        if (oi >= 0) {
+            std::sort(rows.begin(), rows.end(), [&](const Record* a, const Record* b){
+                int c = cmpVar(a->value(oi), b->value(oi));
+                return orderDesc ? (c>0) : (c<0);
+            });
+        }
+    }
+
+    // LIMIT
+    int limit = spLimit_ && spLimit_->value() > 0 ? spLimit_->value() : -1;
     int take = rows.size(); if (limit>=0) take = qMin(take, limit);
 
+    // volcado
     results_->setRowCount(take);
     for (int r=0; r<take; ++r){
         for (int c=0; c<cols.size(); ++c){
@@ -446,10 +605,11 @@ void AccessQueryDesignerPage::onRun(){
             results_->setItem(r,c,new QTableWidgetItem(rows[r]->value(ix).toString()));
         }
     }
-    if (sqlPreview_) sqlPreview_->setText(buildSql());
-    if (status_) status_->setText(QString::number(take) + " fila(s) — " + buildSql());
 
-    emit runSql(buildSql());
+    const QString sql = buildSql();
+    if (sqlPreview_) sqlPreview_->setText(sql);
+    if (status_) status_->setText(QString::number(take) + " fila(s) — " + sql);
+    emit runSql(sql);
 }
 
 // ===== Persistencia =====

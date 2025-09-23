@@ -12,8 +12,9 @@ class QLabel;
 
 /**
  * Diseñador visual de consultas (estilo Access).
- * - Selección de tabla y columnas
- * - Condiciones WHERE (2 filas: Criteria / Or)
+ * - Selección de tabla y columnas (lista de campos)
+ * - Condiciones WHERE: N filas de OR; dentro de cada fila, AND por columna
+ * - ORDER BY (columna + DESC)
  * - LIMIT
  * - Ejecutar: muestra resultados en un grid propio (abajo) y emite runSql(sql)
  * - Guardar / Guardar como / Renombrar / Eliminar vía DataModel
@@ -39,6 +40,8 @@ private slots:
     void onMoveLeft();
     void onMoveRight();
     void onClearGrid();
+    void onAddOrRow();
+    void onDelOrRow();
 
     // insertar operadores en la celda activa (Criteria/Or)
     void onInsertOpEq();
@@ -48,12 +51,16 @@ private slots:
     void onInsertOpGe();
     void onInsertOpLe();
     void onInsertOpLike();
+    void onInsertOpNotLike();
     void onInsertOpBetween();
     void onInsertOpIn();
+    void onInsertOpNotIn();
     void onInsertIsNull();
     void onInsertNotNull();
     void onInsertTrue();
     void onInsertFalse();
+    void onInsertQuotes();
+    void onInsertParens();
 
     // acciones
     void onRun();
@@ -64,20 +71,26 @@ private slots:
 
 private:
     // helpers
-    void rebuildFields();
+    void rebuildFields();              // vuelve a llenar la lista de campos y ORDER BY
     QString buildSql() const;
-    QString currentTable() const;             // <— solo declaración (sin cuerpo aquí)
+    QString currentTable() const;      // implementado en .cpp
     void insertIntoActiveCriteriaCell(const QString& text);
+    int     criteriaRowCount() const;  // filas OR actuales
+    void    ensureGridHeaders();       // vuelve a rotular filas/columnas
 
     // ---- UI ----
     QComboBox*     cbTable_    {nullptr};
     QLineEdit*     edName_     {nullptr};
 
     QListWidget*   lwFields_   {nullptr};   // lista de campos de la tabla
-    QTableWidget*  grid_       {nullptr};   // 2 filas (Criteria/Or), N columnas = campos
+    QTableWidget*  grid_       {nullptr};   // N filas (OR), N columnas = campos
 
+    // ORDER / LIMIT
+    QComboBox*     cbOrderBy_  {nullptr};
+    QToolButton*   btnDesc_    {nullptr};
     QSpinBox*      spLimit_    {nullptr};
 
+    // Preview + resultados
     QLabel*        sqlPreview_ {nullptr};   // texto SQL
     QTableWidget*  results_    {nullptr};   // resultados embebidos
     QLabel*        status_     {nullptr};   // estado (filas/SQL)
