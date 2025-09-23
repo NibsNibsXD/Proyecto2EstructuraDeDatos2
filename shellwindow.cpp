@@ -1656,12 +1656,6 @@ QWidget* ShellWindow::buildHomeRibbon() {
     hl->setContentsMargins(8,2,8,2);
     hl->setSpacing(16);
 
-    auto *gRecords = makeRibbonGroup("Records", {
-                                                    makeActionBtn("New"),
-                                                    makeActionBtn("Save"),
-                                                    makeActionBtn("Delete")
-                                                });
-
     // Quitamos "Navigation" del Ribbon (la navegación ya está en la barra inferior)
 
     auto *gSort = makeRibbonGroup("Sort & Filter", {
@@ -1676,19 +1670,19 @@ QWidget* ShellWindow::buildHomeRibbon() {
                                                 makeActionBtn("Design")
                                             });
 
-    auto *gFind = makeRibbonGroup("Find", {
-        makeActionBtn("Find")
+    auto *gReportes = makeRibbonGroup("Reportes", {
+        makeActionBtn("Reportes")
     });
 
-    hl->addWidget(gRecords);
-    hl->addWidget(vSep());
+
     hl->addWidget(gSort);
     hl->addWidget(vSep());
     hl->addWidget(gViews);
     hl->addWidget(vSep());
-    hl->addWidget(gFind);
+    hl->addWidget(gReportes);
     hl->addStretch();
     return wrap;
+
 }
 
 QWidget* ShellWindow::buildCreateRibbon() {
@@ -1698,18 +1692,25 @@ QWidget* ShellWindow::buildCreateRibbon() {
     hl->setSpacing(16);
 
     auto *gTable = makeRibbonGroup("Tables", {
-                                                 makeActionBtn("Table"),
-                                                 makeActionBtn("Table Design")
-                                             });
+        makeActionBtn("Table")
+    });
+
 
     auto *gQuery = makeRibbonGroup("Queries", {
                                                   makeActionBtn("Query Wizard"),
                                                   makeActionBtn("Query Design")
                                               });
 
+    auto *gFormularios = makeRibbonGroup("Formularios", {
+        makeActionBtn("Formularios")
+    });
+
+
     hl->addWidget(gTable);
     hl->addWidget(vSep());
     hl->addWidget(gQuery);
+    hl->addWidget(vSep());
+    hl->addWidget(gFormularios);
     hl->addStretch();
 
     // --- Placeholders para botones de Tables (dejamos Queries sin popup; se conectan en el ctor) ---
@@ -1776,25 +1777,20 @@ QWidget* ShellWindow::buildCreateRibbon() {
     }
 
     return wrap;
+
 }
+
+
 QWidget* ShellWindow::buildDBToolsRibbon() {
     auto *wrap = new QWidget;
     auto *hl = new QHBoxLayout(wrap);
     hl->setContentsMargins(8,2,8,2);
     hl->setSpacing(16);
 
-    auto *gIdx     = makeRibbonGroup("Indexes",       { makeActionBtn("Indexes") });
     auto *gRel     = makeRibbonGroup("Relationships", { makeActionBtn("Relationships") });
-    auto *gAvail   = makeRibbonGroup("Avail List",    { makeActionBtn("Avail List") });
-    auto *gCompact = makeRibbonGroup("Compact",       { makeActionBtn("Compact") });
 
-    hl->addWidget(gIdx);
-    hl->addWidget(vSep());
     hl->addWidget(gRel);
     hl->addWidget(vSep());
-    hl->addWidget(gAvail);
-    hl->addWidget(vSep());
-    hl->addWidget(gCompact);
     hl->addStretch();
 
     // --- Actions para "Database Tools"
@@ -1868,6 +1864,8 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
     }
 
     return wrap;
+
+
 }
 
 // ======== Stubs de compatibilidad (evitan "undefined reference") ========
