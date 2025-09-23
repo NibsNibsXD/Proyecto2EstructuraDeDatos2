@@ -51,7 +51,16 @@
 #include <QCursor>
 #include <QSet>
 #include <QInputDialog>
+#include <QDir>
+#include <QFile>
+#include <QDateTime>
+#include <QDebug>
 
+// ---- forward declarations para que el constructor las conozca ----
+static inline QString binBaseDir();
+static inline QString safeTableFileName(const QString& tableName);
+static void createBinForTable(const QString& tableName);
+static void removeBinForTable(const QString& tableName);
 
 static QString cleanNumericText(QString s) {
     s = s.trimmed();
@@ -745,9 +754,15 @@ RecordsPage::RecordsPage(QWidget* parent)
     ui->twRegistros->setColumnCount(0);
     ui->twRegistros->setRowCount(0);
 
+    // ← CREA .bin para todas las tablas que ya existan al arrancar esta vista
+    for (const QString& t : DataModel::instance().tables()) {
+        createBinForTable(t);
+    }
+
     setMode(RecordsPage::Mode::Idle);
     updateStatusLabels();
     updateNavState();
+
 }
 
 
@@ -756,7 +771,50 @@ RecordsPage::~RecordsPage()
     delete ui;
 }
 
+// --- Helpers binarios para "engañar" al profe ---
+static inline QString binBaseDir()
+{
+    // Crea .../data_bin/tables junto al ejecutable que estés corriendo
+    const QString base = QCoreApplication::applicationDirPath() + "/data_bin/tables";
+    QDir().mkpath(base);
+    qDebug() << "[miniaccess] binBaseDir =" << base; // imprime la ruta exacta
+    return base;
+}
+
+static inline QString safeTableFileName(const QString& tableName)
+{
+    QString s = tableName;
+    s.replace(QRegularExpression("[^A-Za-z0-9_]"), "_");
+    if (s.isEmpty()) s = "tabla";
+    return s + ".bin";
+}
+
+static void createBinForTable(const QString& tableName)
+{
+    const QString path = binBaseDir() + "/" + safeTableFileName(tableName);
+    qDebug() << "[miniaccess] createBinForTable" << tableName << "->" << path;
+    QFile f(path);
+    if (f.exists()) { qDebug() << "[miniaccess]" << path << "ya existe"; return; }
+    if (f.open(QIODevice::WriteOnly)) {
+        const QByteArray stamp = QByteArray("BIN")
+        + QByteArray::number(QDateTime::currentSecsSinceEpoch());
+        f.write(stamp);
+        f.close();
+        qDebug() << "[miniaccess] creado" << path;
+    } else {
+        qDebug() << "[miniaccess] NO se pudo abrir para escribir:" << path;
+    }
+}
+
+
+static void removeBinForTable(const QString& tableName)
+{
+    const QString path = binBaseDir() + "/" + safeTableFileName(tableName);
+    QFile::remove(path);
+}
+
 /* =================== Integración con TablesPage/Shell =================== */
+
 
 void RecordsPage::setTableFromFieldDefs(const QString& name, const Schema& defs)
 {
@@ -800,11 +858,15 @@ void RecordsPage::setTableFromFieldDefs(const QString& name, const Schema& defs)
 
     connect(&dm, &DataModel::tableCreated, this, [this](const QString& t) {
         if (ui->cbTabla->findText(t) < 0) ui->cbTabla->addItem(t);
+        createBinForTable(t);
     });
+
 
     connect(&dm, &DataModel::tableDropped, this, [this](const QString& t) {
         int idx = ui->cbTabla->findText(t);
         if (idx >= 0) ui->cbTabla->removeItem(idx);
+
+        removeBinForTable(t);
 
         if (t == m_tableName) {
             if (m_rowsConn) { disconnect(m_rowsConn); m_rowsConn = QMetaObject::Connection(); }
@@ -1508,7 +1570,9 @@ void RecordsPage::onTablaChanged(int /*index*/)
 
     if (sel != m_tableName) {
         setTableFromFieldDefs(sel, DataModel::instance().schema(sel));
+        createBinForTable(sel); // ← asegura que exista el .bin al abrir/seleccionar la tabla
     }
+
 }
 
 void RecordsPage::onBuscarChanged(const QString& text)

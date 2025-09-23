@@ -787,10 +787,10 @@ public:
     RelationEdge(TableNode* c, int cf,
                  TableNode* p, int pf,
                  const QString& tooltip,
-                 const QString& /*relType*/,
+                 const QString& relType,
                  FkAction /*onDelete*/, FkAction /*onUpdate*/)
         : QGraphicsPathItem(nullptr)
-        , c_(c), cf_(cf), p_(p), pf_(pf)
+        , c_(c), cf_(cf), p_(p), pf_(pf), relType_(relType)
     {
         // Siempre sobre los nodos para que no se esconda
         setZValue(1);
@@ -803,6 +803,14 @@ public:
 
         setPen(basePen_);
         setToolTip(tooltip);
+
+        // Etiquetas "1"/"N" a cada extremo
+        markChild_  = new QGraphicsSimpleTextItem(this);
+        markParent_ = new QGraphicsSimpleTextItem(this);
+        QFont f = markChild_->font();
+        f.setBold(true);
+        markChild_->setFont(f);
+        markParent_->setFont(f);
 
         refresh();
 
@@ -860,6 +868,35 @@ public:
         QPainterPathStroker stroker; stroker.setWidth(10);
         hitShape_ = stroker.createStroke(path);
         hitShape_.addPath(path);
+
+        // ====== Actualizar etiquetas "1"/"N" ======
+        QString childText = "N", parentText = "1";
+        if (relType_ == "1:1") { childText = "1"; parentText = "1"; }
+        else if (relType_ == "N:M") { childText = "N"; parentText = "N"; }
+
+        markChild_->setText(childText);
+        markParent_->setText(parentText);
+
+        // Vector normal en el primer y último tramo para separar el texto del cable
+        QVector2D dirFirst((pts[1] - pts[0]));
+        if (dirFirst.length() < 0.1) dirFirst = QVector2D(1,0);
+        dirFirst.normalize();
+        QVector2D nFirst(-dirFirst.y(), dirFirst.x());
+
+        QVector2D dirLast(arrowTip_ - arrowBase_);
+        if (dirLast.length() < 0.1) dirLast = QVector2D(1,0);
+        dirLast.normalize();
+        QVector2D nLast(-dirLast.y(), dirLast.x());
+
+        const qreal off = 10.0; // separación lateral
+        QPointF childPos  = a1_        + nFirst.toPointF()*off;  // cerca del extremo hijo
+        QPointF parentPos = arrowBase_ + nLast.toPointF()*off;   // cerca del extremo padre (flecha)
+
+        // Centrar visualmente el texto en su punto
+        QRectF brC = markChild_->boundingRect();
+        QRectF brP = markParent_->boundingRect();
+        markChild_->setPos(childPos  - QPointF(brC.width()/2, brC.height()/2));
+        markParent_->setPos(parentPos - QPointF(brP.width()/2, brP.height()/2));
     }
 
     QPainterPath shape() const override { return hitShape_; }
@@ -877,6 +914,7 @@ protected:
     void paint(QPainter* p, const QStyleOptionGraphicsItem* o, QWidget* w) override {
         QGraphicsPathItem::paint(p, o, w);
         drawArrow(p);  // flecha separada de la tabla
+        // (las etiquetas son QGraphicsItems hijos: no hace falta pintarlas aquí)
     }
 
 private:
@@ -917,9 +955,15 @@ private:
     QPointF arrowBase_; // donde termina la línea
     QPointF arrowTip_;  // punta (separada del rect por arrowGap)
 
+    // NUEVO: tipo y etiquetas
+    QString relType_;
+    QGraphicsSimpleTextItem* markChild_  = nullptr;
+    QGraphicsSimpleTextItem* markParent_ = nullptr;
+
     QPen basePen_, hoverPen_, selPen_;
     QPainterPath hitShape_;
 };
+
 
 
 class RelationsPage : public QWidget {
