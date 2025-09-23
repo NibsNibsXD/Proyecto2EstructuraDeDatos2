@@ -5,6 +5,14 @@
 #include "querypage.h"   // <<< NUEVO
 #include "accessquerydesigner.h" // <<< NUEVO: diseñador visual en clase aparte
 
+// ====== Reportes (NUEVO) ======
+#include "reportdef.h"
+#include "reportengine.h"
+#include "reportrenderer.h"
+#include "reportwizard.h"
+#include "reportspage.h"
+
+#include <QGraphicsSimpleTextItem>
 #include <QApplication>
 #include <QScreen>
 #include <QHBoxLayout>
@@ -54,6 +62,12 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QToolTip>
 #include <QDockWidget> // <<< NUEVO
+#include <QIntValidator>
+#include <QDoubleValidator>
+#include <QDateTimeEdit>
+#include <limits>
+
+
 
 // Tamaños base
 static constexpr int kWinW   = 1400;
@@ -964,6 +978,247 @@ private:
     QPainterPath hitShape_;
 };
 
+// ===============================================
+// ================ FORM PAGE ====================
+// ===============================================
+#include <QFormLayout>
+
+class FormPage : public QWidget {
+    Q_OBJECT
+public:
+    explicit FormPage(QWidget* parent=nullptr)
+        : QWidget(parent)
+    {
+        auto *root = new QVBoxLayout(this);
+        root->setContentsMargins(12,12,12,12);
+        root->setSpacing(10);
+
+        // --- barra superior ---
+        auto *top = new QWidget;
+        auto *th  = new QHBoxLayout(top);
+        th->setContentsMargins(0,0,0,0);
+        th->setSpacing(8);
+
+        cbTable_ = new QComboBox;
+        cbTable_->setMinimumWidth(260);
+        th->addWidget(new QLabel("Seleccionar tabla:"));
+        th->addWidget(cbTable_, 1);
+
+        btnNew_    = new QPushButton("Nuevo");
+        btnEdit_   = new QPushButton("Editar");
+        btnDelete_ = new QPushButton("Eliminar");
+        btnSave_   = new QPushButton("Guardar");
+        btnSave_->setEnabled(false);
+
+        for (auto *b : {btnNew_, btnEdit_, btnDelete_, btnSave_}) b->setFixedHeight(28);
+
+        th->addSpacing(8);
+        th->addWidget(btnNew_);
+        th->addWidget(btnEdit_);
+        th->addWidget(btnDelete_);
+        th->addWidget(btnSave_);
+        th->addStretch();
+        root->addWidget(top);
+
+        // --- indicador posición ---
+        posLbl_ = new QLabel("Registro 0 de 0");
+        posLbl_->setAlignment(Qt::AlignCenter);
+        posLbl_->setStyleSheet("background:#eee; border:1px solid #ddd; padding:6px; font-weight:bold;");
+        root->addWidget(posLbl_);
+
+        // --- contenedor del formulario ---
+        formWrap_ = new QWidget;
+        formWrap_->setStyleSheet("background:#fce4e4; border:1px solid #e2baba; border-radius:8px;");
+        auto *formWrapVL = new QVBoxLayout(formWrap_);
+        formWrapVL->setContentsMargins(16,16,16,16);
+        formWrapVL->setSpacing(12);
+
+        form_ = new QFormLayout;
+        form_->setLabelAlignment(Qt::AlignLeft);
+        form_->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+        form_->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+        formWrapVL->addLayout(form_);
+        root->addWidget(formWrap_, 1);
+
+        // Poblar combo
+        cbTable_->addItems(DataModel::instance().tables());
+
+        // Conexiones
+        connect(cbTable_, &QComboBox::currentTextChanged, this, [this](const QString& t){ loadTable(t); });
+        connect(btnNew_,  &QPushButton::clicked, this, [this]{ clearEditors(); mode_ = Mode::New;  btnSave_->setEnabled(true); });
+        connect(btnEdit_, &QPushButton::clicked, this, [this]{ loadCurrentRowIntoEditors(); mode_ = Mode::Edit; btnSave_->setEnabled(true); });
+        connect(btnDelete_, &QPushButton::clicked, this, [this]{ deleteCurrentRow(); });
+        connect(btnSave_, &QPushButton::clicked, this, [this]{ onSave(); });
+
+        if (cbTable_->count() > 0) loadTable(cbTable_->currentText());
+    }
+
+    // la usa ShellWindow para sincronizar cuando eligen una tabla
+    void setTable(const QString& t, const Schema&) {
+        int ix = cbTable_->findText(t);
+        if (ix < 0) { cbTable_->addItem(t); ix = cbTable_->findText(t); }
+        cbTable_->setCurrentIndex(ix);
+    }
+
+private:
+    enum class Mode { View, New, Edit };
+
+    static QString normType(const QString& tIn) {
+        QString t = tIn.toLower().trimmed();
+        if (t.contains("auto")) return "autonumeracion";
+        if (t.contains("entero") || t.contains("number") || t=="número" || t=="numero") return "number";
+        if (t.contains("fecha") || t.contains("hora") || t.contains("date")) return "datetime";
+        if (t.contains("bool")  || t.contains("sí/no") || t.contains("si/no")) return "bool";
+        if (t.contains("real")  || t.contains("double") || t.contains("decimal")) return "real";
+        return "text";
+    }
+
+    QWidget* makeEditor(const FieldDef& f) {
+        const QString nt = normType(f.type);
+        if (nt == "autonumeracion") {
+            auto *ed = new QLineEdit; ed->setReadOnly(true);
+            ed->setPlaceholderText("Autonumeración"); ed->setStyleSheet("background:#fafafa;"); return ed;
+        } else if (nt == "number") {
+            auto *ed = new QLineEdit; ed->setPlaceholderText("Solo enteros");
+            ed->setValidator(new QIntValidator(std::numeric_limits<int>::min(),
+                                               std::numeric_limits<int>::max(), ed)); return ed;
+        } else if (nt == "real") {
+            auto *ed = new QLineEdit; ed->setPlaceholderText("Número (decimal)");
+            ed->setValidator(new QDoubleValidator(ed)); return ed;
+        } else if (nt == "datetime") {
+            auto *ed = new QDateTimeEdit(QDateTime::currentDateTime()); ed->setCalendarPopup(true); return ed;
+        } else if (nt == "bool") {
+            return new QCheckBox;
+        } else {
+            auto *ed = new QLineEdit; ed->setPlaceholderText("Texto"); return ed;
+        }
+    }
+
+    QVariant readEditor(QWidget* w, const FieldDef& f) const {
+        const QString nt = normType(f.type);
+        if (nt == "autonumeracion") return QVariant();
+        if (nt == "number" || nt=="real") return qobject_cast<QLineEdit*>(w)->text().trimmed();
+        if (nt == "datetime") return qobject_cast<QDateTimeEdit*>(w)->dateTime();
+        if (nt == "bool") return qobject_cast<QCheckBox*>(w)->isChecked();
+        return qobject_cast<QLineEdit*>(w)->text();
+    }
+
+    void setEditor(QWidget* w, const FieldDef& f, const QVariant& v) {
+        const QString nt = normType(f.type);
+        if (nt == "autonumeracion") qobject_cast<QLineEdit*>(w)->setText(v.toString());
+        else if (nt == "number" || nt == "real") qobject_cast<QLineEdit*>(w)->setText(v.toString());
+        else if (nt == "datetime") qobject_cast<QDateTimeEdit*>(w)->setDateTime(v.isNull()? QDateTime::currentDateTime() : v.toDateTime());
+        else if (nt == "bool") qobject_cast<QCheckBox*>(w)->setChecked(v.toBool());
+        else qobject_cast<QLineEdit*>(w)->setText(v.toString());
+    }
+
+    void buildEditors() {
+        for (auto *w : editors_) w->deleteLater();
+        editors_.clear();
+        while (QLayoutItem* it = form_->takeAt(0)) delete it;
+
+        const QFont labelFont = font();
+        for (const auto& f : schema_) {
+            auto *ed = makeEditor(f);
+            editors_.push_back(ed);
+            auto *lbl = new QLabel(f.name);
+            lbl->setStyleSheet("color:#333;");
+            QFont lf = labelFont; lf.setCapitalization(QFont::AllLowercase);
+            lbl->setFont(lf);
+            form_->addRow(lbl, ed);
+        }
+    }
+
+    void clearEditors() {
+        for (int i=0;i<schema_.size();++i) setEditor(editors_[i], schema_[i], QVariant());
+    }
+
+    void loadTable(const QString& t) {
+        table_ = t;
+        schema_ = DataModel::instance().schema(t);
+        buildEditors();
+        current_ = 0;
+        total_ = DataModel::instance().rowCount(t);
+        updatePos();
+        mode_ = Mode::View;
+        btnSave_->setEnabled(false);
+    }
+
+    void updatePos() {
+        posLbl_->setText(QString("Registro %1 de %2").arg(total_==0?0:qMin(current_+1,total_)).arg(total_));
+    }
+
+    void loadCurrentRowIntoEditors() {
+        if (table_.isEmpty() || total_==0) { clearEditors(); return; }
+
+        // Tu DataModel expone rows(table) -> lista de Record
+        const auto recs = DataModel::instance().rows(table_);
+        if (current_ < 0 || current_ >= recs.size()) { clearEditors(); return; }
+
+        const auto rec = recs.value(current_); // value() evita crash si hay out-of-range
+        for (int i=0; i<schema_.size() && i<rec.size(); ++i) {
+            setEditor(editors_[i], schema_[i], rec[i]);
+        }
+    }
+
+
+    void deleteCurrentRow() {
+        if (table_.isEmpty() || total_==0) return;
+        QString err;
+        if (!DataModel::instance().removeRows(table_, {current_}, &err)) {
+            QMessageBox::warning(this, tr("Eliminar"), err); return;
+        }
+        total_ = DataModel::instance().rowCount(table_);
+        if (current_ >= total_) current_ = qMax(0, total_-1);
+        updatePos();
+        loadCurrentRowIntoEditors();
+        btnSave_->setEnabled(false);
+        mode_ = Mode::View;
+    }
+
+    void onSave() {
+        if (table_.isEmpty()) return;
+        Record r(schema_.size());
+        for (int i=0;i<schema_.size(); ++i) r[i] = readEditor(editors_[i], schema_[i]);
+
+        QString err;
+        if (mode_ == Mode::New) {
+            if (!DataModel::instance().insertRow(table_, r, &err)) {
+                QMessageBox::warning(this, tr("Guardar"), err); return;
+            }
+            total_ = DataModel::instance().rowCount(table_);
+            current_ = total_>0 ? total_-1 : 0;
+            updatePos();
+            mode_ = Mode::View;
+            btnSave_->setEnabled(false);
+            QMessageBox::information(this, tr("Guardar"), tr("Registro insertado."));
+        } else if (mode_ == Mode::Edit) {
+            if (!DataModel::instance().updateRow(table_, current_, r, &err)) {
+                QMessageBox::warning(this, tr("Guardar"), err); return;
+            }
+            QMessageBox::information(this, tr("Guardar"), tr("Registro actualizado."));
+            mode_ = Mode::View;
+            btnSave_->setEnabled(false);
+        }
+    }
+
+private:
+    // UI
+    QComboBox* cbTable_ = nullptr;
+    QPushButton *btnNew_=nullptr, *btnEdit_=nullptr, *btnDelete_=nullptr, *btnSave_=nullptr;
+    QLabel* posLbl_ = nullptr;
+    QWidget* formWrap_ = nullptr;
+    QFormLayout* form_ = nullptr;
+
+    // Estado
+    QString table_;
+    Schema  schema_;
+    QVector<QWidget*> editors_;
+    int current_ = 0;
+    int total_   = 0;
+    Mode mode_   = Mode::View;
+};
 
 
 class RelationsPage : public QWidget {
@@ -1411,15 +1666,27 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     };
 
 
+    // Páginas en el stack (con Form)
     stack->addWidget(tablesPage);   // index 0 (Design)
     stack->addWidget(recordsPage);  // index 1 (Datasheet)
 
-    // >>> REEMPLAZO: página real de consultas
+    // === NUEVO: FormPage (captura 1x1)
+    auto *formPage = new FormPage;
+    const int formIdx = stack->addWidget(formPage);
+
+    // Página real de consultas
     auto *queriesPage = new QueryPage;
     const int queriesIdx = stack->addWidget(queriesPage);
 
+    // Relaciones
     auto *relationsPage = new RelationsPage;
     stack->addWidget(relationsPage);
+
+    // ===== NUEVO: ReportsPage =====
+    auto *reportsPage = new ReportsPage;
+    const int reportsIdx = stack->addWidget(reportsPage);
+
+
 
     connect(relationsPage, &RelationsPage::requestAddRelation, this,
             [this, relationsPage](const QString& tableHint){
@@ -1516,12 +1783,14 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
     });
 
 
-    // ====== Ribbon: Views (Datasheet / Design) ======
-    QToolButton *btnDatasheet = nullptr, *btnDesign = nullptr;
+    // ====== Ribbon: Views (Datasheet / Design / Form) ======
+    QToolButton *btnDatasheet = nullptr, *btnDesign = nullptr, *btnForm = nullptr;
     for (auto *b : ribbonStack->widget(0)->findChildren<QToolButton*>()) {
         if (b->text() == "Datasheet") btnDatasheet = b;
         if (b->text() == "Design")    btnDesign    = b;
+        if (b->text() == "Form")      btnForm      = b;
     }
+
     if (btnDatasheet) connect(btnDatasheet, &QToolButton::clicked, this, [=]{
             auto *it = list->currentItem();
             if (!it) return;
@@ -1536,12 +1805,42 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
                 QMessageBox::warning(this,
                                      tr("Clave primaria requerida"),
                                      tr("Seleccione una llave primaria (PK) para continuar al Datasheet."));
-                return; // ← ÚNICO lugar donde mostramos el mensaje
+                return;
             }
 
             recordsPage->setTableFromFieldDefs(t, s);
             stack->setCurrentWidget(recordsPage);
         });
+
+    if (btnDesign) connect(btnDesign, &QToolButton::clicked, this, [=]{
+            // Bloqueo: no salir del Datasheet si hay requeridos vacíos
+            if (stack->currentWidget() == recordsPage) {
+                QModelIndex idx;
+                if (recordsPage->hasUnfilledRequired(&idx)) {
+                    auto *sheet = recordsPage->sheet(); // o findChild<QTableWidget*>("twRegistros")
+                    sheet->setCurrentCell(idx.row(), idx.column());
+                    QToolTip::showText(
+                        sheet->viewport()->mapToGlobal(
+                            sheet->visualItemRect(sheet->item(idx.row(), idx.column())).bottomRight()),
+                        tr("Complete el campo requerido para continuar."),
+                        sheet
+                        );
+                    return; // ← NO cambiamos a Design
+                }
+            }
+            // OK: cambiar a Design
+            stack->setCurrentWidget(tablesPage);
+        });
+
+    // === NUEVO: botón "Form" → abre FormPage y sincroniza con la tabla seleccionada
+    if (btnForm) connect(btnForm, &QToolButton::clicked, this, [=]{
+            if (auto *it = list->currentItem()) {
+                const QString t = it->text();
+                formPage->setTable(t, tablesPage->schemaFor(t));
+            }
+            stack->setCurrentIndex(formIdx);
+        });
+
 
     if (btnDesign) connect(btnDesign, &QToolButton::clicked, this, [=]{
             // Bloqueo: no salir del Datasheet si hay requeridos vacíos
@@ -1604,11 +1903,16 @@ ShellWindow::ShellWindow(QWidget* parent) : QMainWindow(parent) {
                 connect(b, &QToolButton::clicked, recordsPage, &RecordsPage::clearSorting);
             } else if (t.compare("Filter", Qt::CaseInsensitive) == 0) {
                 connect(b, &QToolButton::clicked, recordsPage, &RecordsPage::showFilterMenu);
+            } else if (t.compare("Reportes", Qt::CaseInsensitive) == 0) {
+                // <<< NUEVO: abrir la página de Reportes >>>
+                connect(b, &QToolButton::clicked, this, [stack, reportsIdx]{
+                    stack->setCurrentIndex(reportsIdx);
+                });
             }
-
             // "Save" se deja como placeholder (no aplica en el flujo actual)
         }
     }
+
 
     // ====== Create → Queries ======
     // 1) Dock con el diseñador visual (clase aparte, sin .ui)
@@ -1711,8 +2015,10 @@ QWidget* ShellWindow::buildHomeRibbon() {
 
     auto *gViews = makeRibbonGroup("Views", {
                                                 makeActionBtn("Datasheet"),
-                                                makeActionBtn("Design")
+                                                makeActionBtn("Design"),
+                                                makeActionBtn("Form")   // << NUEVO
                                             });
+
 
     auto *gReportes = makeRibbonGroup("Reportes", {
         makeActionBtn("Reportes")
@@ -1796,13 +2102,14 @@ QWidget* ShellWindow::buildCreateRibbon() {
 #ifdef HAS_HOMEBTN_MEMBER
                 homeBtn->setChecked(true);                 // si tienes puntero miembro
                 createBtn->setChecked(false);
-#else \ \
-    // Fallback: búscalos por texto
+#else
+                // Fallback: búscalos por texto
                 for (auto *tb : this->findChildren<QToolButton*>()) {
                     if (tb->text() == "Home")   tb->setChecked(true);
                     if (tb->text() == "Create") tb->setChecked(false);
                 }
 #endif
+
 
                 // 2) Muestra el ribbon de Home (página 0)
                 auto ribbons = this->findChildren<QStackedWidget*>();
@@ -1819,9 +2126,7 @@ QWidget* ShellWindow::buildCreateRibbon() {
         }
         // NOTA: "Query Wizard"/"Query Design" se conectan en el constructor para abrir QueryPage o el dock visual
     }
-
     return wrap;
-
 }
 
 
@@ -1908,8 +2213,6 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
     }
 
     return wrap;
-
-
 }
 
 // ======== Stubs de compatibilidad (evitan "undefined reference") ========

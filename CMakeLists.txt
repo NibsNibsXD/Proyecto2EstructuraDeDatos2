@@ -9,8 +9,8 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets)
-find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets)
+find_package(QT NAMES Qt6 Qt5 REQUIRED COMPONENTS Widgets PrintSupport)
+find_package(Qt${QT_VERSION_MAJOR} REQUIRED COMPONENTS Widgets PrintSupport)
 
 # ---- helper: añade a una lista solo los paths que existan ----
 function(collect_existing out_var)
@@ -50,7 +50,7 @@ collect_existing(APP_SRCS
 if(APP_SRCS)
   add_executable(app_miniaccess ${APP_SRCS}
   )
-  target_link_libraries(app_miniaccess PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
+  target_link_libraries(app_miniaccess PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::PrintSupport pages)
   target_include_directories(app_miniaccess PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
   )
@@ -81,8 +81,13 @@ if(SHELL_SRCS)
     freespacemanager.h freespacemanager.cpp
     binserializer.h binserializer.cpp
     binstorage.h binstorage.cpp
-    binmirror.h binmirror.cpp)
-  target_link_libraries(shell_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
+    binmirror.h binmirror.cpp
+    reportdef.h reportdef.cpp
+    reportengine.h reportengine.cpp
+    reportrenderer.h reportrenderer.cpp
+    reportwizard.h reportwizard.cpp
+    reportspage.h reportspage.cpp)
+  target_link_libraries(shell_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::PrintSupport pages)
   # Para que shellwindow.cpp pueda incluir "recordspage.h"
   target_include_directories(shell_sandbox PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -100,7 +105,7 @@ collect_existing(TABLES_SRCS
 )
 if(TABLES_SRCS)
   add_executable(tables_sandbox ${TABLES_SRCS})
-  target_link_libraries(tables_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
+  target_link_libraries(tables_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::PrintSupport pages)
   target_include_directories(tables_sandbox PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
   )
@@ -118,7 +123,7 @@ collect_existing(DATA_SRCS
 )
 if(DATA_SRCS)
   add_executable(data_sandbox ${DATA_SRCS})
-  target_link_libraries(data_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets pages)
+  target_link_libraries(data_sandbox PRIVATE Qt${QT_VERSION_MAJOR}::Widgets Qt${QT_VERSION_MAJOR}::PrintSupport pages)
   target_include_directories(data_sandbox PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/data_sandbox

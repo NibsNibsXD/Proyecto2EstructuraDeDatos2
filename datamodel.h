@@ -10,6 +10,8 @@
 #include <QStringList>
 #include <QList>
 #include <QSet>
+#include <QJsonObject>
+#include <QJsonArray>
 
 /* ======================== Relaciones (FK) ======================== */
 enum class FkAction { Restrict, Cascade, SetNull };
@@ -65,8 +67,6 @@ class DataModel : public QObject {
 public:
     static DataModel& instance();
     void markColumnEdited(const QString& table, const QString& colName);
-
-
 
     QVariant nextAutoNumber(const QString& name);  // genera el siguiente autonum
     int autoColumn(const Schema& s) const;
@@ -135,6 +135,20 @@ public:
     bool updateQuery(const QString& name, const QString& sql, QString* err = nullptr);
     bool removeQuery(const QString& name, QString* err = nullptr);
 
+    /* ---------- (Opcional) Ejecución SQL genérica para Reportes ---------- */
+    // Si tu backend lo soporta, puedes implementar este método.
+    // El ReportEngine lo invoca de forma segura vía QMetaObject::invokeMethod(),
+    // pero declararlo aquí permite enlazar estáticamente cuando exista.
+    QVector<QMap<QString, QVariant>> executeSql(const QString& sql) const;
+
+    /* ---------- Reportes (persistencia para ReportsPage/Wizard) ---------- */
+    // Nombres de reportes guardados
+    QStringList reports() const;
+    // JSON del reporte por nombre (vacío si no existe)
+    QJsonObject reportJson(const QString& name) const;
+    // Guarda (crea/actualiza) un reporte; emite reportsChanged() si cambia algo
+    bool saveReport(const QString& name, const QJsonObject& json);
+
 signals:
     void tableCreated(const QString& name);
     void tableDropped(const QString& name);
@@ -142,6 +156,8 @@ signals:
     void rowsChanged(const QString& name);
 
     void queriesChanged();  // cuando se agregan/actualizan/eliminan consultas
+
+    void reportsChanged();  // cuando se agregan/actualizan/eliminan reportes
 
 private:
     explicit DataModel(QObject* parent = nullptr);
@@ -224,6 +240,9 @@ private:
 
     // Consultas guardadas
     QVector<SavedQuery>            m_queries;
+
+    // Reportes guardados (nombre -> JSON definido por ReportDef::toJson())
+    QMap<QString, QJsonObject>     m_reports;
 };
 
 #endif // DATAMODEL_H
