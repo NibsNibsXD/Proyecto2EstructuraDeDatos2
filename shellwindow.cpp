@@ -2050,12 +2050,12 @@ QWidget* ShellWindow::buildHomeRibbon() {
     auto *gViews = makeRibbonGroup("Views", {
                                                 makeActionBtn("Datasheet"),
                                                 makeActionBtn("Design"),
-                                                makeActionBtn("Form")   // << NUEVO
+                                                makeActionBtn("Form", ":/shell/form.png")   // << NUEVO
                                             });
 
 
     auto *gReportes = makeRibbonGroup("Reportes", {
-        makeActionBtn("Reportes")
+        makeActionBtn("Reportes", ":/shell/reports.png")
     });
 
 
@@ -2085,16 +2085,11 @@ QWidget* ShellWindow::buildCreateRibbon() {
                                                   makeActionBtn("Query Design")
                                               });
 
-    auto *gFormularios = makeRibbonGroup("Formularios", {
-        makeActionBtn("Formularios")
-    });
-
 
     hl->addWidget(gTable);
     hl->addWidget(vSep());
     hl->addWidget(gQuery);
     hl->addWidget(vSep());
-    hl->addWidget(gFormularios);
     hl->addStretch();
 
     // --- Placeholders para botones de Tables (dejamos Queries sin popup; se conectan en el ctor) ---
@@ -2170,7 +2165,7 @@ QWidget* ShellWindow::buildDBToolsRibbon() {
     hl->setContentsMargins(8,2,8,2);
     hl->setSpacing(16);
 
-    auto *gRel     = makeRibbonGroup("Relationships", { makeActionBtn("Relationships") });
+    auto *gRel     = makeRibbonGroup("Relationships", { makeActionBtn("Relationships", ":/shell/relationships.png")});
 
     hl->addWidget(gRel);
     hl->addWidget(vSep());

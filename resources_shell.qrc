@@ -3,5 +3,8 @@
         <file>shell/undoBtn.png</file>
         <file>shell/saveBtn.png</file>
         <file>shell/redoBtn.png</file>
+        <file>shell/reports.png</file>
+        <file>shell/relationships.png</file>
+        <file>shell/form.png</file>
     </qresource>
 </RCC>
